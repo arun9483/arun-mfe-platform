@@ -12,14 +12,15 @@ built on top of it incrementally. The MVP focuses on two things:
 | Area | Choice |
 |---|---|
 | Language | TypeScript everywhere |
+| Runtime | Node 24.22.1 or newer; older Node 24 releases abort when the New Relic agent is on |
 | Client | React, built with Vite |
 | Composition | single-spa + `single-spa-react` (its `errorBoundary` is the failing-MFE fallback; the Shell wraps its own features in a React error boundary) |
 | FES | Express |
 | Router | Local reverse proxy (Express + `http-proxy-middleware`), the stand-in for a production CDN's path routing; not monitored. A dev-only tool in `shop-shell/router/`, not part of any unit and never deployed |
-| Design system | Arun design system, `arun` brand. The Shell loads the brand's global CSS once; MFEs load only component CSS |
+| Design system | Arun design system, `arun` brand. The Shell loads the brand's global CSS and the component CSS once; MFEs load no design-system CSS, so every unit uses the same `@arun-dev/ui` version |
 | Unit styles | CSS Modules |
 | Backend | Mocked with Express, one per unit: a stand-in for the separate backend service each environment has in production, not part of the unit. A dev-only `mock-backend/` in its unit's repository, never deployed |
-| Monitoring | New Relic: Node agent in every FES and mock backend, browser agent (Pro+SPA, which records browser traces and single-spa route changes) in the Shell, distributed tracing on |
+| Monitoring | New Relic: Node agent in every FES and mock backend, browser agent (Pro+SPA, which records browser traces and single-spa route changes) in the Shell, distributed tracing on. Servers leave health, version and static file requests out of transactions and keep a whole trace when the caller kept it (`remote_parent_sampled: always_on`) |
 | Client source maps | Every client builds hidden source maps (`build.sourcemap: 'hidden'`), uploads them to New Relic against each file's public URL on the router's origin, then deletes them from the build output |
 | Server source maps | Every FES and mock backend runs its compiled output with `node --enable-source-maps`, so stacks sent to New Relic point at the TypeScript source |
 | Unit tests | Vitest in every codebase, with React Testing Library for clients |
@@ -29,26 +30,28 @@ built on top of it incrementally. The MVP focuses on two things:
 
 | Repository | Contents |
 |---|---|
-| [`shop-shell`](https://github.com/arun9483/shop-shell) | `client/`, `fes/`, `mock-backend/`, `router/`, `tests/e2e/` |
-| [`shop-catalog`](https://github.com/arun9483/shop-catalog) | `client/`, `fes/`, `mock-backend/` |
-| [`shop-cart`](https://github.com/arun9483/shop-cart) | `client/`, `fes/`, `mock-backend/` |
+| [`shop-shell`](https://github.com/arun9483/shop-shell) | `client/`, `fes/`, `mock-backend/`, `server-common/`, `router/`, `tests/e2e/` |
+| [`shop-catalog`](https://github.com/arun9483/shop-catalog) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
+| [`shop-cart`](https://github.com/arun9483/shop-cart) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
 
-`mock-backend/`, `router/` and `tests/e2e/` are dev-only and never deployed. The end-to-end tests need every
-unit running, so they run on demand; each unit's own build and unit tests stay independent.
+`mock-backend/`, `router/` and `tests/e2e/` are dev-only and never deployed. `server-common/` holds the
+servers' trace context, problem+json, health and version code; each repository keeps its own copy, as the
+MVP has no shared packages. The end-to-end tests start every unit whose repository is checked out next to
+`shop-shell` and built, so they run on demand; each unit's own build and unit tests stay independent.
 
 ## Lazy loading
 
 Code loads in three levels, each only when it is needed:
 
 1. **Shell features.** The Shell's entry holds only the frame, top-level routing and the static MFE list. Each Shell feature is a `React.lazy` chunk.
-2. **MFE entry.** single-spa loads `/mfe/<name>/entry.js` on the MFE's first route match. `entry.js` is the only unhashed file: a one-line re-export of the hashed entry (`export * from './entry-<hash>.js'`). The hashed entry is lean: it holds only the single-spa lifecycles (`bootstrap`, `mount`, `unmount`) and the MFE's route table, with no feature code.
+2. **MFE entry.** single-spa loads `/mfe/<name>/entry.js` on the MFE's first route match. `entry.js` is the only unhashed script: a one-line re-export of the hashed entry (`export * from './entry-<hash>.js'`). The hashed entry is lean: it holds only the single-spa lifecycles (`bootstrap`, `mount`, `unmount`) and the MFE's route table, with no feature code.
 3. **MFE features.** Once the entry is mounted, each feature of the MFE is a `React.lazy` chunk, loaded on its first use.
 
 React and React DOM are a separate vendor chunk in each unit, cached by the browser. Sharing one copy across
 units is not part of the MVP.
 
-**Caching.** `entry.js` and `version.json` are served with `Cache-Control: no-cache`, so a deploy is live on
-the next page load. Every hashed file is served with `Cache-Control: public, max-age=31536000, immutable`.
+**Caching.** The Shell's `index.html` (also served for deep links), `entry.js` and `version.json` are served
+with `Cache-Control: no-cache`, so a deploy is live on the next page load. Every hashed file is served with `Cache-Control: public, max-age=31536000, immutable`.
 Because every file holding code has a unique URL, each keeps its own source map in New Relic across deploys
 and rollbacks.
 
@@ -65,7 +68,7 @@ the Shell's browser app.
 
 **FES and mock backends.** Each one is its own New Relic app, named `<unit>-fes` or `<unit>-backend`.
 
-- Every Express app ends with an error handler that responds `500`; the agent records the error on that request's transaction.
+- Every Express app ends with an error handler that responds `500` with problem+json (see API conventions); the agent records the error on that request's transaction.
 - Errors that are handled without failing the request are reported with `newrelic.noticeError`.
 
 **Linking.** Distributed tracing carries one trace from a unit's client through its own FES to its mock
@@ -85,6 +88,7 @@ Every unit is wired only through environment variables, loaded from `.env` with 
 | `NEW_RELIC_LICENSE_KEY` | every FES and mock backend | per developer |
 | `NEW_RELIC_APP_NAME` | every FES and mock backend | `shell-fes`, `catalog-fes`, `cart-fes`, `shell-backend`, `catalog-backend`, `cart-backend` |
 | `NEW_RELIC_USER_API_KEY` | source map upload in every client's build | per developer |
+| `NEW_RELIC_BROWSER_APP_ID` | source map upload in every MFE client's build: the Shell's browser app, which reports MFE errors | per developer |
 | `VITE_NEW_RELIC_*` | Shell client | per developer (public keys only) |
 
 ## Routing
@@ -92,7 +96,7 @@ Every unit is wired only through environment variables, loaded from `.env` with 
 The router is the one public origin (`http://localhost:3000`), as a CDN would be in production. It routes by
 path, so each client reaches its own FES directly:
 
-- `/mfe/<name>/*` and `/api/<name>/*` go to `MFE_<NAME>_URL`.
+- `/mfe/<name>`, `/api/<name>` and everything under them go to `MFE_<NAME>_URL`.
 - Everything else, including `/api/shell/*`, goes to `SHELL_URL`.
 
 The router forwards requests and headers unchanged, including the trace headers, and is not part of any
@@ -102,7 +106,8 @@ another build swaps that MFE without touching the Shell.
 
 ## API conventions
 
-These apply to every route of every FES and mock backend, except `/health/*` and `/version`, which follow only the health and version rules below.
+These apply to every API route: `/api/*` on an FES and every route of a mock backend. `/health/*` and `/version`
+follow only the health and version rules below.
 
 **Trace context** ([W3C Trace Context](https://www.w3.org/TR/trace-context/)). The trace ID travels inside
 `traceparent` (`00-<trace-id>-<parent-id>-<flags>`); there is no separate trace ID request header.
