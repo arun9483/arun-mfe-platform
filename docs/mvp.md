@@ -164,7 +164,7 @@ Every codebase has a test trigger, used to check error logging and source maps:
 
 ## Success criteria
 
-Verified by Playwright against `http://localhost:3000` with all units running; health and version endpoints are checked on each server's own port.
+Verified by Playwright against `http://localhost:3000` with all units running; health and version endpoints are checked on each server's own port. Criteria 7 and 8 are the exception: they are checked by hand in New Relic, because its data arrives minutes after the errors and traces are made.
 
 1. Each unit runs from its own repository. Pointing the router's `MFE_<NAME>_URL` at another build swaps that MFE without rebuilding the Shell.
 2. On `/`, the Shell's home chunk loads, but no other Shell feature chunk and no MFE code; the help chunk loads on the first visit to `/help`.
