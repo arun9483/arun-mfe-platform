@@ -74,6 +74,21 @@ the Shell's browser app.
 **Linking.** Distributed tracing carries one trace from a unit's client through its own FES to its mock
 backend, so an error in any codebase can be followed to the request that caused it.
 
+## Timeouts
+
+Every slow part fails visibly instead of waiting forever. Each unit sets its own values in its `.env`;
+client values are read at build time.
+
+| Part | Default | Variable | When it is slower |
+|---|---|---|---|
+| Shell loading an MFE entry | 5 s | `VITE_MFE_LOAD_TIMEOUT_MS` (Shell) | The Shell's fallback for that MFE |
+| An MFE's bootstrap or mount | 3 s | `VITE_MFE_MOUNT_TIMEOUT_MS` (Shell) | The Shell's fallback for that MFE |
+| A lazy feature chunk | 5 s | `VITE_LAZY_CHUNK_TIMEOUT_MS` (every client) | That unit's fallback |
+| A client API call | 4 s | `VITE_API_TIMEOUT_MS` (every client) | The page says it could not load its data |
+| An FES calling its backend | 3 s | `BACKEND_TIMEOUT_MS` (every FES) | `504` problem+json with the trace ID; readiness fails |
+
+A mock backend calls nothing, so it has no timeout of its own: it is the slow party an FES waits on.
+
 ## Configuration
 
 Every unit is wired only through environment variables, loaded from `.env` with `node --env-file`. Only
@@ -162,3 +177,4 @@ Verified by Playwright against `http://localhost:3000` with all units running; h
 9. No axe violations at WCAG 2.2 AA on every route.
 10. Every API response carries a `traceresponse` whose trace ID matches the request's `traceparent`, and every error response is `application/problem+json` with that `traceId`.
 11. Every FES and mock backend answers `/health/live`, `/health/ready` and `/version`; an FES's readiness fails when its mock backend is down. Every client serves its `version.json`.
+12. Every timeout in the Timeouts table fails as listed, for every unit, and the rest of the shop keeps working.
