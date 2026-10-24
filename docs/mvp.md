@@ -15,15 +15,26 @@ built on top of it incrementally. The MVP focuses on two things:
 | Client | React, built with Vite |
 | Composition | single-spa + `single-spa-react` (its `errorBoundary` is the failing-MFE fallback; the Shell wraps its own features in a React error boundary) |
 | FES | Express |
-| Router | Local reverse proxy (Express + `http-proxy-middleware`), the stand-in for a production CDN's path routing; not monitored. A dev-only tool in the Shell's repository, not part of any unit and never deployed |
+| Router | Local reverse proxy (Express + `http-proxy-middleware`), the stand-in for a production CDN's path routing; not monitored. A dev-only tool in `shop-shell/router/`, not part of any unit and never deployed |
 | Design system | Arun design system, `arun` brand. The Shell loads the brand's global CSS once; MFEs load only component CSS |
 | Unit styles | CSS Modules |
-| Backend | Mocked with Express, one per unit: a stand-in for the separate backend service each environment has in production, not part of the unit |
+| Backend | Mocked with Express, one per unit: a stand-in for the separate backend service each environment has in production, not part of the unit. A dev-only `mock-backend/` in its unit's repository, never deployed |
 | Monitoring | New Relic: Node agent in every FES and mock backend, browser agent (Pro+SPA, which records browser traces and single-spa route changes) in the Shell, distributed tracing on |
 | Client source maps | Every client builds hidden source maps (`build.sourcemap: 'hidden'`), uploads them to New Relic against each file's public URL on the router's origin, then deletes them from the build output |
 | Server source maps | Every FES and mock backend runs its compiled output with `node --enable-source-maps`, so stacks sent to New Relic point at the TypeScript source |
 | Unit tests | Vitest in every codebase, with React Testing Library for clients |
-| End-to-end tests | Playwright, with axe for WCAG 2.2 AA |
+| End-to-end tests | Playwright, with axe for WCAG 2.2 AA, in `shop-shell/tests/e2e/` |
+
+## Repositories
+
+| Repository | Contents |
+|---|---|
+| [`shop-shell`](https://github.com/arun9483/shop-shell) | `client/`, `fes/`, `mock-backend/`, `router/`, `tests/e2e/` |
+| [`shop-catalog`](https://github.com/arun9483/shop-catalog) | `client/`, `fes/`, `mock-backend/` |
+| [`shop-cart`](https://github.com/arun9483/shop-cart) | `client/`, `fes/`, `mock-backend/` |
+
+`mock-backend/`, `router/` and `tests/e2e/` are dev-only and never deployed. The end-to-end tests need every
+unit running, so they run on demand; each unit's own build and unit tests stay independent.
 
 ## Lazy loading
 
