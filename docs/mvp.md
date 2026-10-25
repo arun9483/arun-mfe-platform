@@ -30,13 +30,13 @@ built on top of it incrementally. The MVP focuses on two things:
 
 | Repository | Contents |
 |---|---|
-| [`shop-shell`](https://github.com/arun9483/shop-shell) | `client/`, `fes/`, `mock-backend/`, `server-common/`, `router/`, `tests/e2e/` |
+| [`shop-shell`](https://github.com/arun9483/shop-shell) | `client/`, `fes/`, `mock-backend/`, `server-common/`, `router/`, `packages/shell-stub/`, `tests/e2e/` |
 | [`shop-catalog`](https://github.com/arun9483/shop-catalog) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
 | [`shop-cart`](https://github.com/arun9483/shop-cart) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
 
 `mock-backend/`, `router/` and `tests/e2e/` are dev-only and never deployed. `server-common/` holds the
-servers' trace context, problem+json, health and version code; each repository keeps its own copy, as the
-MVP has no shared packages. The end-to-end tests start every unit whose repository is checked out next to
+servers' trace context, problem+json, health and version code; each repository keeps its own copy.
+`packages/shell-stub/` is the one published package, a dev tool (see Standalone mode). The end-to-end tests start every unit whose repository is checked out next to
 `shop-shell` and built, so they run on demand; each unit's own build and unit tests stay independent.
 
 ## Lazy loading
@@ -73,6 +73,24 @@ the Shell's browser app.
 
 **Linking.** Distributed tracing carries one trace from a unit's client through its own FES to its mock
 backend, so an error in any codebase can be followed to the request that caused it.
+
+## Standalone mode
+
+Each MFE also runs on its own, without the Shell app, on the Shell stub
+[`@arun-shop/shell-stub`](https://www.npmjs.com/package/@arun-shop/shell-stub). Running together in the
+Shell is unchanged.
+
+- The stub's page loads what the Shell loads for every MFE: the design-system CSS, the Inter font, the
+  Shell's base styles (the same `global.css`) and single-spa. It mounts the MFE through the same
+  lifecycles and `domElement` prop, so the MFE's code is the same in both modes.
+- The stub's server proxies `/mfe/<name>` and `/api/<name>` to the MFE's FES, so the browser uses one
+  origin, as with the router.
+- The New Relic browser agent runs only when the stub is given the Shell's browser keys.
+- It is built from `shop-shell/packages/shell-stub`, with the same design-system versions as the Shell,
+  and published from there. The `@arun-shop` npm scope holds the shop platform's packages; `@arun-mfe`
+  is kept for packages shared by every MFE platform.
+- Each MFE repository adds it as a dev dependency with a `standalone` script, e.g.
+  `shell-stub --name catalog --mfe-url http://localhost:3002 --port 3102`. Nothing of it is deployed.
 
 ## Timeouts
 
@@ -178,3 +196,4 @@ Verified by Playwright against `http://localhost:3000` with all units running; h
 10. Every API response carries a `traceresponse` whose trace ID matches the request's `traceparent`, and every error response is `application/problem+json` with that `traceId`.
 11. Every FES and mock backend answers `/health/live`, `/health/ready` and `/version`; an FES's readiness fails when its mock backend is down. Every client serves its `version.json`.
 12. Every timeout in the Timeouts table fails as listed, for every unit, and the rest of the shop keeps working.
+13. Every MFE also runs standalone on the Shell stub with only its own servers: it loads lazily, looks as it does in the Shell, keeps its in-page links working and shows its fallbacks.
