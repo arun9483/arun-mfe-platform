@@ -89,8 +89,29 @@ Shell is unchanged.
 - It is built from `shop-shell/packages/shell-stub`, with the same design-system versions as the Shell,
   and published from there. The `@arun-shop` npm scope holds the shop platform's packages; `@arun-mfe`
   is kept for packages shared by every MFE platform.
-- Each MFE repository adds it as a dev dependency with a `standalone` script, e.g.
-  `shell-stub --name catalog --mfe-url http://localhost:3002 --port 3102`. Nothing of it is deployed.
+- Each MFE repository adds it as a dev dependency with two scripts. Nothing of it is deployed.
+
+| Script | Command (Catalog) | Serves the MFE from |
+|---|---|---|
+| `standalone` | `shell-stub --name catalog --mfe-url http://localhost:3002 --port 3102` | its FES: the built files, as in the Shell |
+| `standalone:dev` | the same with `--dev` | its own Vite, run inside the stub: its source, with HMR and React Fast Refresh |
+
+**Development mode.** With `--dev`, the stub loads the MFE's own Vite (from its `node_modules`, with its
+`vite.config.ts`) and runs it in the stub's process: one process, one port, HMR on the stub's origin. The
+API still goes to the FES. The MFE needs no extra Vite configuration; `--dev-root` (default `client`) and
+`--dev-entry` (default `src/entry.tsx`) cover other layouts. Browser debugging works on the original
+TypeScript through Vite's source maps.
+
+**Ports.** Each stub needs one port: Catalog `3102`, Cart `3103`. A port in use stops the stub with a
+message saying what to do; `--port 0` picks any free port; `SHELL_STUB_PORT` and `SHELL_STUB_MFE_URL`
+override a script's flags, for other ports on one machine without editing `package.json`.
+
+**Releases.** The stub is released with changesets, as `arun-design-system` is: a changeset in
+`shop-shell` makes the Release workflow (`release.yml`) open a version PR, and merging it publishes to
+npm through trusted publishing, with provenance, a tag and a GitHub release. The stub holds no MFE list,
+so adding, removing or changing an MFE needs no new release. A release is needed when the stub itself
+changes, and whenever the Shell moves to another `@arun-dev/ui` or `@arun-dev/tokens` version: the stub
+must load the same design-system CSS as the Shell, and every MFE then moves to that stub version.
 
 ## Timeouts
 
@@ -196,4 +217,4 @@ Verified by Playwright against `http://localhost:3000` with all units running; h
 10. Every API response carries a `traceresponse` whose trace ID matches the request's `traceparent`, and every error response is `application/problem+json` with that `traceId`.
 11. Every FES and mock backend answers `/health/live`, `/health/ready` and `/version`; an FES's readiness fails when its mock backend is down. Every client serves its `version.json`.
 12. Every timeout in the Timeouts table fails as listed, for every unit, and the rest of the shop keeps working.
-13. Every MFE also runs standalone on the Shell stub with only its own servers: it loads lazily, looks as it does in the Shell, keeps its in-page links working and shows its fallbacks.
+13. Every MFE also runs standalone on the Shell stub with only its own servers: it loads lazily, looks as it does in the Shell, keeps its in-page links working and shows its fallbacks. In development mode its source runs through its own Vite in the stub, with HMR connected on the stub's origin.
