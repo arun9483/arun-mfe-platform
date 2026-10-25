@@ -128,6 +128,37 @@ client values are read at build time.
 
 A mock backend calls nothing, so it has no timeout of its own: it is the slow party an FES waits on.
 
+## Deployment
+
+The MVP is deployed on free tiers. Staging comes first; production follows the same design later.
+
+| Piece | Where |
+|---|---|
+| Each FES and each mock backend | Google Cloud Run, one service per unit and environment, from a container image built per commit |
+| The one public origin | A Cloudflare Worker on a `workers.dev` subdomain, doing the router's path routing and caching hashed files at the edge |
+| Images | Google Artifact Registry, keeping only the latest few per service |
+| The New Relic license key | Google Secret Manager, read by each service at start |
+
+| Environment | Deployed | From |
+|---|---|---|
+| Staging (pre-prod) | On every push or merge to `main` after lint, typecheck and tests pass, or by hand from any branch | The chosen ref, built for staging |
+| Production (later) | Only by hand, from `main` or a release tag | The chosen ref, built for production; never promoted from staging |
+
+- **Independent units.** Each repository deploys its own unit: its FES, its mock backend and its client.
+  `shop-shell` also deploys the Worker, whose targets are settings, so swapping an MFE is a settings
+  change, as with the router.
+- **Private backends.** A mock backend accepts only its own FES, which calls it with a Google identity
+  token; the browser can never reach it.
+- **One build per environment.** A client is built for its environment (its public origin and New Relic
+  keys), so its source maps match the deployed URLs.
+- **Keyless deploys.** GitHub Actions reaches Google Cloud through workload identity federation, with no
+  stored key. The Cloudflare deploy uses a token limited to Workers scripts.
+- **Costs.** At most one instance per service and none when idle; a budget alert and a spend cap guard
+  the bill.
+- **No infrastructure details in the repositories.** Project, account and service identifiers and all
+  keys live in GitHub environment variables and secrets (`staging`, later `production`), not in code or
+  docs.
+
 ## Configuration
 
 Every unit is wired only through environment variables, loaded from `.env` with `node --env-file`. Only
