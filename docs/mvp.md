@@ -113,6 +113,21 @@ so adding, removing or changing an MFE needs no new release. A release is needed
 changes, and whenever the Shell moves to another `@arun-dev/ui` or `@arun-dev/tokens` version: the stub
 must load the same design-system CSS as the Shell, and every MFE then moves to that stub version.
 
+## Theme
+
+The Shell's header has a theme switcher: light, dark or system (the default). It sets the design
+system's theme mode, `data-theme="light"` or `"dark"` on `<html>`, or none for system, so the brand's
+`prefers-color-scheme` rules decide. MFEs need no code for it: their design-system components and
+tokens follow the attribute. The Shell's base styles set `color-scheme` to match, so native parts
+(scrollbars, pickers) follow too.
+
+- The choice is kept in `localStorage` (`shop-theme`); system is the absence of a saved value.
+- An inline script in `index.html` applies it before the first paint, so the page never flashes the
+  other theme.
+- The Shell stub renders the same switcher, so every MFE can be checked in each theme standalone.
+
+Giving MFEs the active theme as a read-only value (see the vision) is not part of the MVP yet.
+
 ## Timeouts
 
 Every slow part fails visibly instead of waiting forever. Each unit sets its own values in its `.env`;
@@ -218,7 +233,7 @@ MFE.
 
 | Unit | Routes | Demonstrates |
 |---|---|---|
-| Shell | `/`, `/help` | Frame, static MFE list; home and help as lazy features |
+| Shell | `/`, `/help` | Frame, static MFE list, theme switcher; home and help as lazy features |
 | Catalog | `/catalog`, `/catalog/:id` | Lean entry; product list and product detail as lazy features |
 | Cart | `/cart` | Lean entry; cart as a lazy feature that loads from its backend |
 
@@ -244,8 +259,9 @@ Verified by Playwright against `http://localhost:3000` with all units running; h
 6. The browser talks only to the router's origin and the New Relic browser agent's own endpoints, each client's API calls reach only its own FES, and no `.map` file is served.
 7. Every test trigger's error, including every client `kind`, appears in New Relic under its codebase's app (client errors attributed to their unit by file URL), and its stack resolves to the original TypeScript file, line and function.
 8. For each unit, `kind=backend` produces one trace ID shared by the unit's client (reported under the Shell's browser app), its FES and its mock backend, whose span carries the error: Shell client → `shell-fes` → `shell-backend`; Catalog client → `catalog-fes` → `catalog-backend`; Cart client → `cart-fes` → `cart-backend`. The router does not appear in the trace.
-9. No axe violations at WCAG 2.2 AA on every route.
+9. No axe violations at WCAG 2.2 AA on every route, in the light and the dark theme.
 10. Every API response carries a `traceresponse` whose trace ID matches the request's `traceparent`, and every error response is `application/problem+json` with that `traceId`.
 11. Every FES and mock backend answers `/health/live`, `/health/ready` and `/version`; an FES's readiness fails when its mock backend is down. Every client serves its `version.json`.
 12. Every timeout in the Timeouts table fails as listed, for every unit, and the rest of the shop keeps working.
-13. Every MFE also runs standalone on the Shell stub with only its own servers: it loads lazily, looks as it does in the Shell, keeps its in-page links working and shows its fallbacks. In development mode its source runs through its own Vite in the stub, with HMR connected on the stub's origin.
+13. Every MFE also runs standalone on the Shell stub with only its own servers: it loads lazily, looks as it does in the Shell, switches theme as in the Shell, keeps its in-page links working and shows its fallbacks. In development mode its source runs through its own Vite in the stub, with HMR connected on the stub's origin.
+14. The theme switcher picks light, dark or system, in the Shell and on the Shell stub; the choice survives a reload with no flash of the other theme, and system follows the operating system.
