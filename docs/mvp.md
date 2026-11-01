@@ -158,8 +158,23 @@ Browser → nginx (HTTPS, cache) → shop-router → FES → mock backend
 
 Each repository's `deploy/build.sh` builds its images on any machine with Docker. nginx names no domain,
 and only nginx is published. Each backend has its own Docker network, so only its own FES can reach it. The
-stack reports to the New Relic apps without the `staging` suffix, on hosts that start with `docker-`. Every
-unit runs one instance for now; none holds session state, so scaling up needs no redesign.
+stack reports to the New Relic apps without the `staging` suffix, on hosts that start with `docker-`.
+
+**Pods.** Every unit runs one pod by default; `ROUTER_PODS` and `<UNIT>_PODS` set more.
+
+- **No session affinity.** No server holds session state, sets a cookie or needs a request to return to it.
+  The theme is in the browser. Real backends must keep state in a shared store, never in pod memory.
+- **Even traffic.** nginx looks the router up in DNS every 2 s and moves to the next pod within 1 s if one does
+  not answer. The router opens a new connection per request, because a reused one stays on its first pod.
+- **Graceful shutdown.** On `SIGTERM` or `SIGINT`, a server stops taking connections, finishes its requests in
+  flight for up to 8 s, sends New Relic what it holds and exits. It gets 10 s before it is killed.
+- **Liveness, not readiness.** Docker's health checks use `/health/live`, because `/health/ready` fails when a
+  backend is down, and removing every FES pod would take its files and `problem+json` errors with it.
+- **Deploys.** `docker/deploy.sh <service>` replaces all of a service's pods at once, so a new `entry.js` never
+  asks an old pod for a chunk it lacks. The unit is unavailable for a few seconds. A rollout with no gap needs
+  hashed files in storage shared by every pod.
+- **nginx** stays one container locally; production uses a managed CDN or load balancer. Staging keeps
+  `--max-instances 1`, so none of this applies there yet.
 
 The MVP is also deployed on free tiers. Staging comes first; production follows the same design later.
 Staging still uses the Cloudflare Worker: moving it to `shop-router` is separate work, and until then a routing
@@ -205,6 +220,7 @@ Every unit is wired only through environment variables, loaded from `.env` with 
 | `SHELL_URL` | router | `http://localhost:3001` |
 | `MFE_CATALOG_URL`, `MFE_CART_URL` | router | `http://localhost:3002`, `http://localhost:3003` |
 | `HEALTH_ENDPOINTS_ENABLED` | router | on unless `false` |
+| `ROUTER_PODS`, `SHELL_PODS`, `CATALOG_PODS`, `CART_PODS` | `docker/.env`, for the Docker stack | `1` |
 | `PUBLIC_ORIGIN` | source map upload in every client's build; `docker/.env` for the Docker stack | `http://localhost:3000`; on Docker `https://shop.test` |
 | `NEW_RELIC_LICENSE_KEY` | router, every FES and mock backend | per developer |
 | `NEW_RELIC_APP_NAME` | router, every FES and mock backend | `shop-router`, `shell-fes`, `catalog-fes`, `cart-fes`, `shell-backend`, `catalog-backend`, `cart-backend` |
