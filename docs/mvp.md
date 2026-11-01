@@ -37,7 +37,7 @@ built on top of it incrementally. The MVP focuses on two things:
 | [`shop-catalog`](https://github.com/arun9483/shop-catalog) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
 | [`shop-cart`](https://github.com/arun9483/shop-cart) | `client/`, `fes/`, `mock-backend/`, `server-common/` |
 
-`tests/e2e/` is never deployed. `edge/` is the Cloudflare Worker that staging uses (see Deployment). `server-common/` holds the
+`tests/e2e/` is never deployed. `edge/` is the Cloudflare Worker in front of `shop-router` on staging (see Deployment). `server-common/` holds the
 servers' trace context, problem+json, health and version code; each repository keeps its own copy.
 `packages/shell-stub/` is the one published package, a dev tool (see Standalone mode). The end-to-end tests need `shop-router` checked out and built next to `shop-shell`, or at
 `SHOP_ROUTER_DIR`, and start every unit whose repository is checked out there and built, so they run on demand; each unit's own build and unit tests stay independent.
@@ -177,13 +177,16 @@ stack reports to the New Relic apps without the `staging` suffix, on hosts that 
   `--max-instances 1`, so none of this applies there yet.
 
 The MVP is also deployed on free tiers. Staging comes first; production follows the same design later.
-Staging still uses the Cloudflare Worker: moving it to `shop-router` is separate work, and until then a routing
-change goes in both.
+Staging uses the same chain, with a Cloudflare Worker in nginx's place:
+
+```
+Browser → Cloudflare Worker → shop-router → FES → mock backend
+```
 
 | Piece | Where |
 |---|---|
-| Each FES and each mock backend | Google Cloud Run, one service per unit and environment, from a container image built per commit |
-| The one public origin | A Cloudflare Worker on a `workers.dev` subdomain, doing the router's path routing. `workers.dev` has no edge cache |
+| The router, each FES and each mock backend | Google Cloud Run, one service per unit and environment, from a container image built per commit |
+| The one public origin | A Cloudflare Worker on a `workers.dev` subdomain, forwarding everything to `shop-router`. It does no routing, and `workers.dev` has no edge cache |
 | Images | Google Artifact Registry, keeping only the latest few per service |
 | The New Relic license key | Google Secret Manager, read by each service at start |
 
@@ -194,8 +197,9 @@ change goes in both.
 | Production (later) | Only by hand, from `main` or a release tag | The chosen ref, built for production; never promoted from staging |
 
 - **Independent units.** Each repository deploys its own unit: its FES, its mock backend and its client.
-  `shop-shell` also deploys the Worker, whose targets are settings, so swapping an MFE is a settings
-  change, as with the router.
+  `shop-router` deploys the router, which reads each FES's URL from Cloud Run at deploy, so swapping an MFE
+  is a settings change. `shop-shell` also deploys the Worker, whose one setting is the router's URL.
+- **One build.** Docker and staging build images with the same `deploy/build.sh`; only the deploy steps differ.
 - **Private backends.** A mock backend accepts only its own FES, which calls it with a Google identity
   token; the browser can never reach it.
 - **One build per environment.** A client is built for its environment (its public origin and New Relic
@@ -203,7 +207,8 @@ change goes in both.
 - **Keyless deploys.** GitHub Actions reaches Google Cloud through workload identity federation, with no
   stored key. The Cloudflare deploy uses a token limited to Workers scripts.
 - **Costs.** At most one instance per service and none when idle; a budget alert and a spend cap guard
-  the bill.
+  the bill. The price is cold starts: after about 15 idle minutes, a service takes several seconds to wake, so
+  the first visit can pass the client timeouts and show a fallback or a load error until the services are up.
 - **No infrastructure details in the repositories.** Project, account and service identifiers and all
   keys live in GitHub environment variables and secrets (`staging`, later `production`), not in code or
   docs.
@@ -220,6 +225,7 @@ Every unit is wired only through environment variables, loaded from `.env` with 
 | `SHELL_URL` | router | `http://localhost:3001` |
 | `MFE_CATALOG_URL`, `MFE_CART_URL` | router | `http://localhost:3002`, `http://localhost:3003` |
 | `HEALTH_ENDPOINTS_ENABLED` | router | on unless `false` |
+| `HEALTH_UNIT_TIMEOUT_MS` | router | `1000` |
 | `ROUTER_PODS`, `SHELL_PODS`, `CATALOG_PODS`, `CART_PODS` | `docker/.env`, for the Docker stack | `1` |
 | `PUBLIC_ORIGIN` | source map upload in every client's build; `docker/.env` for the Docker stack | `http://localhost:3000`; on Docker `https://shop.test` |
 | `NEW_RELIC_LICENSE_KEY` | router, every FES and mock backend | per developer |
@@ -292,7 +298,7 @@ standard for `/version`, which uses SemVer and an ISO 8601 build time. Both are 
 
 The router's `/health/live` and `/health/ready` never depend on a unit, so one failing MFE cannot take it out of
 service. It also answers for every unit. These are public and on by default, so they carry only names, statuses and
-versions; `HEALTH_ENDPOINTS_ENABLED=false` makes them `404`. The Worker on staging does not serve them.
+versions; `HEALTH_ENDPOINTS_ENABLED=false` makes them `404`. They reach staging through the Worker, with `HEALTH_UNIT_TIMEOUT_MS` raised because units sleep there.
 
 | Endpoint | Responds with |
 |---|---|
