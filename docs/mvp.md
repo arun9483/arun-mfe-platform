@@ -1,5 +1,8 @@
 # MVP (POC)
 
+> **Frozen at tag `mvp-1`.** This document describes MVP-1 and no longer changes. Single sign-on builds on
+> it in [MVP-2](mvp-2-sso.md).
+
 The MVP implements a subset of the [vision](vision.md) with the leanest possible units, first in **local
 development and end-to-end tests**. It never deviates from the vision; the vision's other requirements are
 built on top of it incrementally. The MVP focuses on two things:
