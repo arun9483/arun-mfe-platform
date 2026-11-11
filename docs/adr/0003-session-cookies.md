@@ -1,6 +1,6 @@
 # ADR 0003: Session cookies
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-11
 
 ## Context

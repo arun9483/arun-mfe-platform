@@ -13,7 +13,7 @@ This repository contains **only documentation and figures**. Code lives in separ
 | ADR | Decision | Status |
 |---|---|---|
 | [0001](docs/adr/0001-shop-router-placement.md) | Keep `shop-router` separate from `shop-shell` | Accepted |
-| [0002](docs/adr/0002-authentication-architecture.md) | Authentication architecture | Proposed |
-| [0003](docs/adr/0003-session-cookies.md) | Session cookies | Proposed |
-| [0004](docs/adr/0004-idp-adapter.md) | IdP adapter | Proposed |
-| [0005](docs/adr/0005-backend-to-backend-access.md) | Backend-to-backend access | Proposed |
+| [0002](docs/adr/0002-authentication-architecture.md) | Authentication architecture | Accepted |
+| [0003](docs/adr/0003-session-cookies.md) | Session cookies | Accepted |
+| [0004](docs/adr/0004-idp-adapter.md) | IdP adapter | Accepted |
+| [0005](docs/adr/0005-backend-to-backend-access.md) | Backend-to-backend access | Accepted |

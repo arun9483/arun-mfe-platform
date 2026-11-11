@@ -1,6 +1,6 @@
 # ADR 0004: IdP adapter
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-11
 
 ## Context
