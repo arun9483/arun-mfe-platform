@@ -5,8 +5,8 @@
 
 ## Context
 
-Most of MVP-2's authentication is standard and works with any compliant identity provider (IdP): sign-in
-with authorization code and PKCE, refresh, sign-out (RP-Initiated Logout), discovery, `/userinfo`, client
+Most of MVP-2's authentication is standard and works with any compliant identity provider (IdP): login
+with authorization code and PKCE, refresh, logout (RP-Initiated Logout), discovery, `/userinfo`, client
 credentials, and checking JWTs against the IdP's public keys.
 
 Four things are specific to Keycloak:

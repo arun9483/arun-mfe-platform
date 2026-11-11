@@ -16,10 +16,10 @@ A **unit** is the Shell or one MFE: a client plus its own **Front End Server (FE
 - The FES serves its client's static files and proxies its API calls; the browser never calls backends directly. Cross-domain data is combined on the backend.
 - An FES may use any server technology.
 - All clients use one common brand from the design system.
-- All units are served from **one public origin**; the identity provider's sign-in pages are the only other origin the browser visits. Only public configuration reaches the browser.
+- All units are served from **one public origin**; the identity provider's login pages are the only other origin the browser visits. Only public configuration reaches the browser.
 
 ### Shell App
-- **Lightweight:** it owns only the frame, top-level routing, MFE loading, the event service, the theme switcher (light, dark or system), the user's sign-in and sign-out, and its own features.
+- **Lightweight:** it owns only the frame, top-level routing, MFE loading, the event service, the theme switcher (light, dark or system), the user's login and logout, and its own features.
 - It loads MFEs from a **static list** kept in the Shell. Adding or removing an MFE changes the list and redeploys the Shell; deploying a new version of an MFE does not.
 - A failing MFE is isolated behind a fallback.
 
@@ -32,8 +32,8 @@ A **unit** is the Shell or one MFE: a client plus its own **Front End Server (FE
 - The Shell gives MFEs the event service plus one read-only value: the active theme (light or dark). Nothing else is shared.
 
 ### Users and access
-- Users sign in **once** with a shared **identity provider**, which can be replaced without changing how units work.
-- The Shell owns the sign-in lifecycle: signing in, keeping the session alive and signing out. MFEs receive nothing for it from the Shell.
+- Users log in **once** with a shared **identity provider**, which can be replaced without changing how units work.
+- The Shell owns the login lifecycle: logging in, keeping the session alive and logging out. MFEs receive nothing for it from the Shell.
 - Every unit's FES and backend verify the user on every request and decide access themselves, refusing when they cannot verify. The browser only decides what to show.
 - No unit holds session state, and no credential the browser holds is readable by page code.
 - A backend calling another unit's backend proves its own identity; the provider decides who may call it and knows its consumers.
