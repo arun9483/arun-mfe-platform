@@ -48,6 +48,16 @@ export interface IdpAdapter {
 - The adapter caches per `sub` and fails closed: an IdP error is `503`, never "allow".
 - Every adapter passes one set of contract tests; the Keycloak adapter also runs against a real Keycloak.
 
+## Amended after phase 1 (2026-11-11)
+
+- `rolesFromClaims` is dropped: Keycloak refuses lightweight access tokens at `/userinfo`, and the FES gate asks
+  its backend's `/me` instead ([ADR 0002](0002-authentication-architecture.md)).
+- `isSessionActive(sub: string, sid: string): Promise<boolean>` is added, for the backend: the Keycloak adapter
+  looks for `sid` in `GET /admin/realms/shop/users/<sub>/sessions`.
+- The Keycloak adapter asks for the `kc-admin-api` scope for admin API calls, which Keycloak 26.8 requires.
+- `getUnitRoles` reads the user's groups with their roles by client ID (`/users/<sub>/groups?briefRepresentation=false`),
+  because `view-users` cannot look up a client's internal ID. Roles are granted through each unit's groups.
+
 ## Consequences
 
 - Moving to another IdP means a new adapter and that IdP's settings files, with no change to the units'
