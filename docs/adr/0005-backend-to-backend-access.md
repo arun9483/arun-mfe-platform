@@ -51,6 +51,15 @@ user, `azp` = the caller, `aud` = the provider.
 A client still calls only its own FES. Links between units stay plain URLs, and events between MFEs carry only
 IDs.
 
+## Amended after phase 4 (2026-11-12)
+
+- Built as Cart's backend reading names and prices from Catalog's `GET /service/products`. The user is sent in
+  `X-Shop-User-Sub` and recorded only; Catalog trusts the caller for `read-products`.
+- A service route accepts only service access tokens (no `sid`), and user routes only user tokens (with a `sid`).
+- A token without the provider in `aud` is refused with `401`: Keycloak puts the provider there only when the
+  caller holds one of its roles. `403` is for a token that names the provider but lacks the route's role.
+- On Docker the provider and its granted callers share one network, `catalog-api`. A network is two-way.
+
 ## Consequences
 
 - A compromised backend can act for any user, but only through the API roles granted to it. Keep each API

@@ -282,15 +282,23 @@ Each client calls only its own unit's `/me`, and only when its UI needs the user
 `newrelic.setUserId`.
 
 ### Backend to backend
-For example, Cart's backend reading product names from Catalog's backend:
-1. Cart's backend gets its service access token (client credentials, reused until shortly before expiry).
-2. It calls Catalog's backend with `Authorization: Bearer <service access token>` and the user's `sub` in the
-   request.
-3. Catalog's backend checks the token with `jose`: its own name in `aud`, and the caller's API role
-   (`catalog-api:read-products`). Anything else is refused.
+Built in phase 4: Cart's backend reads product names and prices from Catalog's backend.
+1. Cart's backend gets its service access token (client credentials, no admin scope, reused until shortly
+   before expiry; `serviceCaller`).
+2. It calls `GET /service/products?ids=…` on Catalog's backend with `Authorization: Bearer <service access
+   token>` and the user's `sub` in `X-Shop-User-Sub`. Never the user's token.
+3. Catalog's backend checks the token with `jose` (`requireService`): its own name in `aud`, an access token
+   with no `sid` (so never a user's token), and the caller's API role (`catalog-api:read-products`, read through
+   `idp.serviceRoles`). Anything else is refused: `401`, or `403` for a token that names Catalog but lacks the
+   role. A user's token on this route is a `401`, and a service token on a user route too (no `sid`).
 4. Per endpoint, Catalog decides whether it trusts the caller for that `sub` or also checks the user's own
-   Catalog roles with `idp.getUnitRoles`. Its API documentation says which.
-5. The grant is in Catalog's `keycloak/` file, so Catalog always knows its consumers.
+   Catalog roles. For `read-products` it trusts the caller (decided): product data is not the user's, and a user
+   without a Catalog role, such as `bob`, still sees names in their cart. `X-Shop-User-Sub` is recorded for
+   tracing only.
+5. The grant is in Catalog's `keycloak/` file, so Catalog always knows its consumers. On Docker only Catalog's
+   backend and the backends it grants share a network, `catalog-api`.
+6. Cart composes from Catalog only with login on and `CATALOG_BACKEND_URL` set; otherwise it keeps its own copy
+   (MVP-1). If Catalog cannot answer, the cart is a `503`.
 
 A client never calls another unit's FES. Data from another domain is combined on the backend, as the vision
 requires. Links to another unit's pages stay plain URLs; the target unit checks its own access. Events between
@@ -299,7 +307,9 @@ MFEs (the vision's event service) carry only IDs.
 ### Unit health and version for operators
 1. `shop-ops` gets a service access token holding `shop-router` → `ops`.
 2. It calls `/health/units*` or `/version/units*` with `Authorization: Bearer <service access token>`.
-3. The router checks it with `jose`: `shop-router` in `aud` and the `ops` role; otherwise `401` or `403`.
+3. The router checks it with `requireService`: `shop-router` in `aud`, no `sid`, and the `ops` role; otherwise
+   `401`, or `403` for a token that names the router but lacks the role. The router carries a copy of the units'
+   `server-common/src/auth/` (decided: one implementation everywhere).
 4. Each server's own `/health/live`, `/health/ready` and `/version` stay public; Docker's health checks use them.
 
 `HEALTH_UNITS_AUTH` is off by default, so MVP-1's criterion 11 still passes.
@@ -344,6 +354,8 @@ export interface IdpAdapter {
   isSessionActive(sub: string, sid: string): Promise<boolean>;
   /** FES and backend: true only for an access token, never an ID or refresh token. */
   isAccessToken(header: Record<string, unknown>, claims: Record<string, unknown>): boolean;
+  /** Provider backend and router: the roles a service access token holds on `client`. */
+  serviceRoles(claims: Record<string, unknown>, client: string): string[];
 }
 ```
 
@@ -357,6 +369,7 @@ export interface IdpAdapter {
 | User by `sub` | — | `GET /admin/realms/shop/users/<sub>` |
 | Roles by `sub` | — | `GET /admin/realms/shop/users/<sub>/groups?briefRepresentation=false`: each group's roles by client ID. `view-users` cannot look up a client's internal ID, which the role-mapping endpoints need |
 | Live session | — | `GET /admin/realms/shop/users/<sub>/sessions` contains the token's `sid` |
+| Roles in a service access token | — | `serviceRoles`: `resource_access.<client>.roles` |
 
 - Nothing outside the adapter calls an IdP-specific endpoint or reads an IdP-specific claim.
 - The adapter caches per `sid` and fails closed.
@@ -428,7 +441,8 @@ Every switch is off by default.
 | Variable | Used by | Default |
 |---|---|---|
 | `AUTH_ENABLED` | every FES and backend | `false`: MVP-1 behaviour |
-| `HEALTH_UNITS_AUTH` | router | `false` |
+| `HEALTH_UNITS_AUTH` | router | `false`; with it, the router also needs `OIDC_ISSUER_URL` and `OIDC_INTERNAL_URL` |
+| `CATALOG_BACKEND_URL` | Cart's backend | unset: Cart keeps its own names and prices (MVP-1) |
 | `OIDC_ISSUER_URL` | every FES and backend, the router | `https://shop.test:8443/realms/shop` |
 | `OIDC_INTERNAL_URL` | every FES and backend, the router | `http://keycloak:8080/realms/shop`: where the server reaches the IdP inside Docker |
 | `PUBLIC_ORIGIN` | Shell FES | `https://shop.test`: the callback, logout and `Origin` checks |
@@ -455,6 +469,13 @@ Keycloak, its database and the importer run from a separate `docker/compose.sso.
 
 `KC_HOSTNAME` keeps the issuer `https://shop.test:8443/realms/shop` for the browser and for token checks,
 while servers reach Keycloak on the internal network.
+
+**Networks.** Each unit reaches Keycloak on its own Docker network (`idp-edge`, `idp-router`, `idp-shell`,
+`idp-catalog`, `idp-cart`; the importer and the check script on `idp-admin`), with Keycloak alone on all of them.
+Phase 4 found that the first overlay's single shared `idp` network let every container reach every backend,
+undoing MVP-1's private backends while the overlay was on. `catalog-api` joins Catalog's backend and the
+backends it grants; a network is two-way, so Catalog's backend can reach Cart's too, which refuses any call
+without a valid token for it. A one-way path would need a proxy.
 
 **Header size.** Logging in sets three cookies at once, about 4 KB of response headers. nginx's default buffer
 refused that ("upstream sent too big header"), so `shop.conf` raises it to 16 KB. Any CDN or proxy in front of
@@ -486,10 +507,12 @@ stated. Criterion 14 is checked by hand in New Relic.
 8. Logout shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, and
    every backend and FES refuses within 30 s.
 9. With the IdP stopped, FES and backend checks answer `503` problem+json and never allow a request.
-10. A backend calling another without the needed API role gets `403`; with the role, the call succeeds and
-    carries the user's `sub`.
-11. With `HEALTH_UNITS_AUTH=true`, `/health/units*` and `/version/units*` answer `401` without a token, `403`
-    without the `ops` role and as in MVP-1 with it; each server's own health and version stay public.
+10. A backend calling another without the needed API role is refused (`401` when its token does not name the
+    provider, which Keycloak leaves out without a role there; `403` when it does but lacks the role); with the
+    role, the call succeeds and carries the user's `sub`.
+11. With `HEALTH_UNITS_AUTH=true`, `/health/units*` and `/version/units*` answer `401` without a valid token
+    for the router, `403` with one lacking the `ops` role, and as in MVP-1 with it; each server's own health and
+    version stay public.
 12. Each MFE runs standalone with `AUTH_DEV_BYPASS=true` as the configured user and roles, every response
     carries `X-Auth-Dev-Bypass: true`, and a server with the bypass refuses to start when `NODE_ENV=production`
     or `K_SERVICE` is set.
@@ -543,7 +566,9 @@ Each phase is re-planned before it starts. The next starts only when asked.
    Shell reading a failed MFE load's status, the standalone bypass. Criteria 2, 3, 4, 6, 7, 8, 12 and 15 pass for
    Catalog and Cart (`sso.spec.ts`, `standalone.spec.ts`); criterion 5 for every backend (`sso-check.sh`, check
    15); MVP-1's suite passes with login off.
-4. Backend-to-backend access with API roles; the operator token on the router.
+4. **Done:** backend-to-backend access with API roles (Cart reads products from Catalog) and the operator token
+   on the router; private backends again with the overlay on (one Keycloak network per unit). Criteria 10 and 11
+   pass (`sso-check.sh` checks 16–18, `sso.spec.ts`); MVP-1's suite passes with login off.
 5. The remaining end-to-end criteria across units.
 
 ## Appendix: IdP settings per repository
