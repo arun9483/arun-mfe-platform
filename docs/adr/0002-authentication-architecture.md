@@ -1,6 +1,6 @@
 # ADR 0002: Authentication architecture
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-11
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR 0005: Backend-to-backend access
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-11
 
 ## Context
