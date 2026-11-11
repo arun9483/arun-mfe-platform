@@ -171,13 +171,19 @@ token it sends to another backend never carries admin API rights.
 2. With login on, the Shell FES marks the page (`<meta name="shop-login" content="on">`). Only then does the
    Shell client call `/api/shell/me`, show the user and call `newrelic.setUserId(sub)`; with login off it makes
    no extra request, as in MVP-1.
-3. On `/catalog`, `import('/mfe/catalog/entry.js')` carries `shop_at`; Catalog's FES checks it.
+3. On `/catalog`, `import('/mfe/catalog/entry.js')` carries `shop_at`; Catalog's FES checks it with its gate.
+4. A failed `import()` does not say why, so with login on the Shell then reads the entry's status (`HEAD`):
+   `401` → refresh under the shared lock and load once more (or log in); `403` → "You do not have access to
+   Catalog" in Catalog's place, not reported as an error, the rest of the shop working; anything else → the
+   "unavailable" fallback, as in MVP-1. MFEs need no code for this (decided 2026-11-11).
 
 ### API call
 For example `GET /api/catalog/products`:
 1. **FES.** Checks `shop_at` with `jose`: signature, `iss`, `exp`, `azp = shell-fes`, and that it is an access
-   token (`idp.isAccessToken`). Then the **gate**: it asks its own backend's `/me` with the token, cached per
-   `sid` for 15 s. `200` with at least one of this unit's roles lets the request through; `401` (session
+   token (`idp.isAccessToken`). A token without this unit's backend in `aud` is a `403` at once: the IdP puts
+   it there only when the user holds one of the unit's roles, and the backend would otherwise answer `401`,
+   which the client takes for an expired login (found in phase 3). Then the **gate**: it asks its own
+   backend's `/me` with the token, cached per `sid` for 15 s. `200` with at least one of this unit's roles lets the request through; `401` (session
    ended, user disabled) and `403` (no role in this unit) are passed back. Then `newrelic.setUserID(sub)`.
 2. The FES calls its backend with `Authorization: Bearer <lightweight access token>`.
 3. **Backend.** Checks the token with `jose`: signature, `iss`, `exp`, its own name in `aud`, and the token
@@ -304,7 +310,7 @@ MFEs (the vision's event service) carry only IDs.
 |---|---|---|---|
 | Browser | Nothing enforced | What to show, from `/me` | — |
 | Router | Only `/health/units*`, `/version/units*`: `aud`, `ops` role | Operator access | `401`, `403` |
-| FES | `shop_at`: signature, `iss`, `exp`, `azp`, token type; gate: its backend's `/me` | Logged in? Allowed into this unit? | `401`, `403` |
+| FES | `shop_at`: signature, `iss`, `exp`, `azp`, token type; its backend in `aud`; gate: its backend's `/me` | Logged in? Allowed into this unit? | `401`, `403` |
 | Backend | Lightweight access token: signature, `iss`, `exp`, `aud`, token type; then live session by `sid`, `enabled` and roles by `sub`. Service access token: `aud`, API role | Everything about the data: ownership, actions | `401`, `403` |
 
 **Fail closed.** If the IdP cannot be reached, a check answers `503`, never "allow". Every refusal is
@@ -426,6 +432,7 @@ Every switch is off by default.
 | `OIDC_ISSUER_URL` | every FES and backend, the router | `https://shop.test:8443/realms/shop` |
 | `OIDC_INTERNAL_URL` | every FES and backend, the router | `http://keycloak:8080/realms/shop`: where the server reaches the IdP inside Docker |
 | `PUBLIC_ORIGIN` | Shell FES | `https://shop.test`: the callback, logout and `Origin` checks |
+| `LOGIN_CLIENT_ID` | an MFE's FES | `shell-fes`: the only login client whose tokens it accepts (`azp`). It has no client of its own |
 | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | Shell FES (`shell-fes`), each backend (its own client), the operator caller (`shop-ops`) | in each server's own `.env`: its copy of the secret in its repository's `keycloak/.env`, which must match (decided 2026-11-11) |
 | `AUTH_COOKIE_KEY` | Shell FES | per developer; encrypts `shop_rt` and `shop_id` |
 | `IDP_ADAPTER` | every FES and backend | `keycloak` |
@@ -468,8 +475,8 @@ stated. Criterion 14 is checked by hand in New Relic.
 3. After login the user lands on `returnTo`. The browser holds `shop_at` (`Path=/`), `shop_rt`
    (`Path=/auth`) and `shop_id` (`Path=/auth/logout`), all `HttpOnly; Secure; SameSite=Lax`; page code sees
    none of them; page, MFE and API requests carry only `shop_at`.
-4. A user without a unit's role gets `403` for that unit's `entry.js` and API, the MFE's no-access fallback
-   shows, and the rest of the shop keeps working.
+4. A user without a unit's role gets `403` for that unit's `entry.js` and API, the Shell shows "You do not have
+   access" in that MFE's place, and the rest of the shop keeps working.
 5. Every backend, called directly, refuses a missing token, an expired one, one signed by another key, one
    without its name in `aud`, and an ID token, each with `401` problem+json.
 6. `/api/<unit>/me` returns the OIDC fields and only that unit's roles, with `no-store` and `Vary: Cookie`,
@@ -531,8 +538,11 @@ Each phase is re-planned before it starts. The next starts only when asked.
    the login lifecycle and the three cookies, the FES gate, `server-common`'s auth with the Keycloak adapter, the
    backend checks and `/me`, and the Shell client (user, logout, refresh wrapper, tabs, New Relic). Criteria 2, 3,
    6, 7, 8, 15, 16 and 17 pass for the Shell (`shop-shell`'s `sso.spec.ts`); MVP-1's suite passes with login off.
-3. Catalog and Cart: `server-common`'s auth copied, the FES gate (including `entry.js`), backend checks, `/me`,
-   the clients' refresh wrapper, the no-access fallback, the standalone bypass.
+3. **Done:** Catalog and Cart: `server-common`'s auth (identical copies, the Shell's included), the FES gate on
+   `entry.js` and the API with the `aud` shortcut, backend checks and `/me`, the clients' refresh wrapper, the
+   Shell reading a failed MFE load's status, the standalone bypass. Criteria 2, 3, 4, 6, 7, 8, 12 and 15 pass for
+   Catalog and Cart (`sso.spec.ts`, `standalone.spec.ts`); criterion 5 for every backend (`sso-check.sh`, check
+   15); MVP-1's suite passes with login off.
 4. Backend-to-backend access with API roles; the operator token on the router.
 5. The remaining end-to-end criteria across units.
 

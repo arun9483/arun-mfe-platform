@@ -88,6 +88,14 @@ Phase 1 found that Keycloak refuses lightweight access tokens at `/userinfo`. Th
 
 Logout now reaches every FES and backend within about 30 s, not 5 min. Option C stands otherwise.
 
+## Amended after phase 3 (2026-11-11)
+
+- An FES answers `403` at once for a valid token that does not name its unit's backend in `aud`. The IdP leaves
+  it out when the user has no role in that unit, and the backend's `401` would otherwise send the client into a
+  refresh-and-login loop.
+- MFE entries are gated too. A failed `import()` does not say why, so the Shell reads the entry's status after a
+  failed load: `401` → refresh and load once more, `403` → its "no access" message for that MFE.
+
 ## Consequences
 
 - Every FES and backend depends on the IdP for each uncached check. Checks fail closed, so an IdP outage
