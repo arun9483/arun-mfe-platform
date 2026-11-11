@@ -12,7 +12,7 @@ MVP-1 and off by default ([mvp-2-sso.md](../mvp-2-sso.md)). The design must:
 - prove the user's identity on every hop: browser → FES → backend;
 - let each unit decide its own access, failing closed;
 - keep tokens away from page code, and give MFEs nothing from the Shell beyond what the vision allows;
-- use open-source npm packages for authentication, token management and sign-out;
+- use open-source npm packages for authentication, token management and logout;
 - let a backend learn who the user is, by `sub`, using **its own** service access token rather than reusing
   the user's token.
 
@@ -21,10 +21,10 @@ MVP-1 and off by default ([mvp-2-sso.md](../mvp-2-sso.md)). The design must:
 **A. Tokens in the browser.** A public client with `keycloak-js`: the browser holds the access and refresh
 tokens and sends a bearer token on each call.
 
-**B. Shell-owned sign-in, full access token.** The Shell FES signs users in; the access token carries the
+**B. Shell-owned login, full access token.** The Shell FES signs users in; the access token carries the
 profile and roles, so units authorize from the token alone.
 
-**C. Shell-owned sign-in, lightweight access token, lookup by `sub` (chosen).** The Shell FES signs users in.
+**C. Shell-owned login, lightweight access token, lookup by `sub` (chosen).** The Shell FES signs users in.
 The access token carries only `sub`, `sid`, `iss`, `exp`, `iat`, `jti`, `azp` and `aud`. Each FES checks it
 locally and gates on `/userinfo`; each backend checks it locally, takes `sub`, and looks up the user and its
 roles at the IdP with its own service access token.
@@ -47,9 +47,9 @@ backend.
 | Tokens readable by page code | Yes | No | No | No | No | No | No |
 | MFEs need a token from the Shell | Yes, against the vision | No | No | No | No | No | No |
 | IdP calls per request | None | None | FES and backend, cached | Backend, cached | None | None | One per FES, cached |
-| Sign-out reaches units | At token expiry | At token expiry | FES within 30 s, backend within 5 min | Backend within its cache | At ID token expiry, no `/userinfo` | At ID token expiry | At token expiry |
+| Logout reaches units | At token expiry | At token expiry | FES within 30 s, backend within 5 min | Backend within its cache | At ID token expiry, no `/userinfo` | At ID token expiry | At token expiry |
 | Backend reuses the user's token | — | — | No: looks up by `sub` with its own token | Yes, sent to the IdP | — | — | Yes, to the IdP |
-| Audience per backend | Yes | Yes | Yes | Yes | No: `aud` is the sign-in client | Yes | Yes |
+| Audience per backend | Yes | Yes | Yes | Yes | No: `aud` is the login client | Yes | Yes |
 | Personal data in a cookie | — | Profile and roles | `sub` only | `sub` only | Profile | Profile | `sub` only |
 | New signing keys or clients | No | No | No | No | No | A key per FES | A client per FES |
 | Standard use of tokens | Yes | Yes | Yes | Yes | No: APIs take access tokens | Yes | Yes |
@@ -58,7 +58,7 @@ backend.
 
 **Option C.**
 
-- **Sign-in.** Only the Shell FES signs users in, with the client `shell-fes`; FESes have no client of their
+- **Login.** Only the Shell FES signs users in, with the client `shell-fes`; FESes have no client of their
   own. Tokens live in `HttpOnly` cookies ([ADR 0003](0003-session-cookies.md)).
 - **FES.** Checks the lightweight access token locally with `jose` (signature, `iss`, `exp`, `azp`, token
   type), gates on `/userinfo` cached per `sid`, and forwards the token to its backend.
@@ -86,20 +86,20 @@ Phase 1 found that Keycloak refuses lightweight access tokens at `/userinfo`. Th
 - **Backend.** Besides `enabled` and roles, checks that the token's session is live (`sid` among the user's
   sessions, through the IdP adapter), cached per `sid` for about 30 s.
 
-Sign-out now reaches every FES and backend within about 30 s, not 5 min. Option C stands otherwise.
+Logout now reaches every FES and backend within about 30 s, not 5 min. Option C stands otherwise.
 
 ## Consequences
 
 - Every FES and backend depends on the IdP for each uncached check. Checks fail closed, so an IdP outage
   stops the shop. Caches (about 30 s in a FES, 30–60 s in a backend) limit the load.
-- After sign-out, FESes and backends refuse the user's token within about 30 s (see the amendment).
+- After logout, FESes and backends refuse the user's token within about 30 s (see the amendment).
 - Every backend's service account can read all users (`view-users`).
 - The three cookies are an exception to MVP-1's "no server sets a cookie" rule.
-- MVP-1's criterion 6 gains the IdP's origin, during sign-in and sign-out only.
+- MVP-1's criterion 6 gains the IdP's origin, during login and logout only.
 
 ## Revisit when
 
 - IdP lookups prove too slow or too costly: move roles into the token (B) for the units that need it.
-- A backend must see sign-out at once: introspection (D) for that backend.
+- A backend must see logout at once: introspection (D) for that backend.
 - `view-users` is too broad: Keycloak's fine-grained admin permissions, per backend.
 - Entitlement arrives: it adds a check at each layer, on the same tokens.

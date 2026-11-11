@@ -5,11 +5,11 @@
 
 ## Context
 
-The Shell FES receives three tokens at sign-in ([ADR 0002](0002-authentication-architecture.md)):
+The Shell FES receives three tokens at login ([ADR 0002](0002-authentication-architecture.md)):
 
 - the **lightweight access token**, which every FES needs on every request;
 - the **refresh token**, which only the Shell FES needs, to refresh;
-- the **ID token**, which only the Shell FES needs, to sign out with `id_token_hint`.
+- the **ID token**, which only the Shell FES needs, to log out with `id_token_hint`.
 
 Requirements:
 
@@ -39,7 +39,7 @@ and ID token together, encrypted, on `Path=/auth`.
 
 All are `HttpOnly; Secure; SameSite=Lax`.
 
-**E. As D, without keeping the ID token.** Sign-out sends `client_id` instead of `id_token_hint`.
+**E. As D, without keeping the ID token.** Logout sends `client_id` instead of `id_token_hint`.
 
 ## Comparison
 
@@ -51,8 +51,8 @@ All are `HttpOnly; Secure; SameSite=Lax`.
 | Secret shared by every FES | Yes, which also decrypts the refresh token | No | No | No | No |
 | Library version shared by every unit | Yes, the cookie format | No | No | No | No |
 | Size on every request | Three tokens, possibly split into chunks | Large | One token | One token | One token |
-| Sign-out | `id_token_hint` | — | `id_token_hint` | `id_token_hint` | The IdP's confirmation page |
-| Sign-in code written by us | None | — | Routes and cookies | Routes and cookies | Routes and cookies |
+| Logout | `id_token_hint` | — | `id_token_hint` | `id_token_hint` | The IdP's confirmation page |
+| Login code written by us | None | — | Routes and cookies | Routes and cookies | Routes and cookies |
 
 `express-openid-connect` is built on `openid-client`. The protocol and checks it relies on (discovery, PKCE,
 `state` and `nonce`, the code exchange, ID token checks, refresh, the end-session URL) all come from
@@ -65,24 +65,31 @@ to work differently.
 
 - `shop_at` is set with `Path=/` explicitly; a cookie set by an `/auth/*` response otherwise defaults to
   `Path=/auth`.
-- The three cookies are set together at sign-in and refresh, and cleared together at sign-out and on a failed
+- The three cookies are set together at login and refresh, and cleared together at logout and on a failed
   refresh. Each is cleared with its own `Path`.
 - `shop_rt` and `shop_id` are encrypted with `jose` using `AUTH_COOKIE_KEY`, held only by the Shell FES.
   `shop_at` is a signed token any FES checks, carrying no personal data beyond `sub`, so it is not encrypted.
 - `sub` reaches monitoring through `/api/shell/me`, not through a readable cookie.
-- Without `shop_id`, sign-out falls back to `client_id`, and the IdP asks the user to confirm.
+- Without `shop_id`, logout falls back to `client_id`, and the IdP asks the user to confirm.
 
 ## Consequences
 
-- The Shell FES owns about 200 lines of sign-in code: the four `/auth/*` routes, a short-lived encrypted
-  cookie per sign-in attempt (`shop_tx_<state>`) for `state`, `nonce`, the PKCE verifier and `returnTo`, and
+- The Shell FES owns about 200 lines of login code: the four `/auth/*` routes, a short-lived encrypted
+  cookie per login attempt (`shop_tx_<state>`) for `state`, `nonce`, the PKCE verifier and `returnTo`, and
   the three cookies. It needs focused tests: `returnTo` must be a path on the shop's origin; `Origin` is
-  checked on `POST /auth/refresh` and `POST /auth/logout`; cookie attributes; parallel refreshes; sign-ins
+  checked on `POST /auth/refresh` and `POST /auth/logout`; cookie attributes; parallel refreshes; logins
   started in several tabs.
-- Every tab shares the cookies. Tabs coordinate refresh with a Web Lock and sign-in and sign-out with a
+- Every tab shares the cookies. Tabs coordinate refresh with a Web Lock and login and logout with a
   `BroadcastChannel` ([mvp-2-sso.md, Several tabs](../mvp-2-sso.md#several-tabs)).
 - No FES needs the Shell's secret or its library version; each checks `shop_at` with `jose`.
 - Units hold no session, so any pod serves any request.
+
+## Amended after phase 2 (2026-11-11)
+
+- The IdP returns the browser to `/auth/logged-out`, which tells the other tabs once its session has ended.
+  Telling them when the form is submitted let another tab log in again on the session being ended.
+- Setting the three cookies takes about 4 KB of response headers: proxies in front of the shop need a buffer
+  larger than nginx's default (16 KB on Docker).
 
 ## Revisit when
 
