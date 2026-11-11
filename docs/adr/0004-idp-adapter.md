@@ -58,6 +58,13 @@ export interface IdpAdapter {
 - `getUnitRoles` reads the user's groups with their roles by client ID (`/users/<sub>/groups?briefRepresentation=false`),
   because `view-users` cannot look up a client's internal ID. Roles are granted through each unit's groups.
 
+## Amended after phase 4 (2026-11-12)
+
+- `serviceRoles(claims, client)` is added, for provider backends and the router: Keycloak reads
+  `resource_access.<client>.roles` from a service access token.
+- `shop-router` carries a copy of the units' `server-common/src/auth/`, so the operator token is checked by the
+  same code and the same adapter.
+
 ## Consequences
 
 - Moving to another IdP means a new adapter and that IdP's settings files, with no change to the units'
