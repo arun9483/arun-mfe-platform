@@ -75,9 +75,12 @@ to work differently.
 ## Consequences
 
 - The Shell FES owns about 200 lines of sign-in code: the four `/auth/*` routes, a short-lived encrypted
-  cookie for `state`, `nonce`, the PKCE verifier and `returnTo`, and the three cookies. It needs focused
-  tests: `returnTo` must be a path on the shop's origin; `Origin` is checked on `POST /auth/refresh` and
-  `POST /auth/logout`; cookie attributes; parallel refreshes.
+  cookie per sign-in attempt (`shop_tx_<state>`) for `state`, `nonce`, the PKCE verifier and `returnTo`, and
+  the three cookies. It needs focused tests: `returnTo` must be a path on the shop's origin; `Origin` is
+  checked on `POST /auth/refresh` and `POST /auth/logout`; cookie attributes; parallel refreshes; sign-ins
+  started in several tabs.
+- Every tab shares the cookies. Tabs coordinate refresh with a Web Lock and sign-in and sign-out with a
+  `BroadcastChannel` ([mvp-2-sso.md, Several tabs](../mvp-2-sso.md#several-tabs)).
 - No FES needs the Shell's secret or its library version; each checks `shop_at` with `jose`.
 - Units hold no session, so any pod serves any request.
 

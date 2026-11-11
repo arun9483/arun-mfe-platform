@@ -140,11 +140,16 @@ without `shell-fes` naming Catalog. Its "Add to lightweight access token" switch
 1. A protected request without a valid `shop_at`: a page is redirected to `/auth/login?returnTo=<path>`; an
    API call or `entry.js` gets `401` problem+json.
 2. The Shell FES redirects to the IdP's authorization endpoint (code with PKCE, `state`, `nonce`), keeping
-   `state`, `nonce`, the PKCE verifier and `returnTo` in a short-lived encrypted cookie on `Path=/auth/callback`.
+   `state`, `nonce`, the PKCE verifier and `returnTo` in a short-lived encrypted cookie named for this attempt,
+   `shop_tx_<state>`, on `Path=/auth/callback`. Each attempt has its own, so sign-ins started in several tabs
+   do not overwrite each other.
 3. The user signs in on the IdP's page; the IdP starts its session.
 4. The IdP redirects to `/auth/callback?code=…`. The Shell FES exchanges the code with `shell-fes`'s
    credentials and checks the ID token (signature, `iss`, `aud`, `nonce`).
-5. It sets the three cookies and redirects to `returnTo`, which must be a path on the shop's origin.
+5. It sets the three cookies, clears `shop_tx_<state>` and redirects to `returnTo`, which must be a path on the
+   shop's origin.
+6. A callback whose attempt cookie is missing or does not match: if the browser already holds a valid
+   `shop_at`, because another tab signed in, it redirects to `returnTo`; otherwise it starts a new sign-in.
 
 ### Page and MFE load
 1. The Shell's HTML, every `/mfe/<name>/entry.js` and every `/api/*` need a valid `shop_at`. Hashed files
@@ -166,14 +171,18 @@ For example `GET /api/catalog/products`:
 
 ### Refresh
 1. A FES finds `shop_at` expired and answers `401` problem+json.
-2. The client calls `POST /auth/refresh` once; concurrent `401`s on a page share that one call.
-3. The Shell FES refreshes with `shell-fes`'s credentials (`scope=openid`, so a new ID token comes too), sets
-   the three cookies, and the client retries its call.
+2. The client takes the lock `shop-auth-refresh` with the [Web Locks API](https://w3c.github.io/web-locks/)
+   (`navigator.locks.request`), which every tab of the shop shares. Inside the lock it first retries the
+   call: another tab may have refreshed already, and cookies are shared by every tab.
+3. Only if the retry still gets `401` does it call `POST /auth/refresh`. The Shell FES refreshes with
+   `shell-fes`'s credentials (`scope=openid`, so a new ID token comes too) and sets the three cookies. The
+   client releases the lock and retries its call.
 4. If refresh fails, because the IdP's session has ended, the three cookies are cleared and the client goes
    to `/auth/login?returnTo=<path>`.
 
-Each client carries this small `401` → refresh → retry wrapper itself. It uses only same-origin URLs, so no
-code is shared with the Shell, as the vision requires.
+Each client carries this small `401` → lock → retry → refresh → retry wrapper itself. It shares only a URL
+and a lock name with the Shell, never code, as the vision requires. No tab refreshes on a timer: refresh
+happens only when a call is refused, so hidden tabs do nothing.
 
 ### Sign-out
 1. The Shell client calls `newrelic.setUserId(null)`, then submits a `POST` form to `/auth/logout`, so the
@@ -185,6 +194,36 @@ code is shared with the Shell, as the vision requires.
 4. Elsewhere: refresh fails at once; a FES's `/userinfo` gate fails within its cache time (about 30 s); a
    backend's local check passes until the lightweight access token expires (at most 5 min). This is the
    accepted price of checks that need no call per request.
+
+### Several tabs
+Every tab of one browser profile shares the cookies, so all tabs always hold the same tokens. The Shell keeps
+the tabs in step with a [`BroadcastChannel`](https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts)
+named `shop-auth`, and remembers the `sub` it shows.
+
+| Event in one tab | Message | Every other tab's Shell |
+|---|---|---|
+| Sign-out | `{ type: 'signed-out' }` | Navigates to `/auth/login?returnTo=<its path>` at once, so no tab keeps showing the user's data |
+| Sign-in | `{ type: 'signed-in', sub }` | On the sign-in page: reloads to its `returnTo`. Showing another `sub`: reloads (see below) |
+| Refresh | None: the Web Lock above coordinates it | — |
+
+- **Another user in another tab.** Tab A shows alice; in tab B the user signs out and signs in as bob. Tab A's
+  next request would run as bob while its screen still shows alice. So a Shell that learns of another `sub`,
+  from a `signed-in` message or from `/api/shell/me`, reloads the page. MFEs live in the Shell's page, so the
+  reload covers them; they need no code for it.
+- **When a tab becomes visible** (`visibilitychange`), the Shell calls `/api/shell/me`. This catches what no
+  message announces: the IdP's session expiring, an administrator ending it, or a sign-out from another app or
+  browser. A `401` leads to the usual refresh, and a failed refresh to sign-in.
+- **Sign-ins started in two tabs** each keep their own attempt cookie (see Sign-in), and a callback that finds
+  the user already signed in goes to its `returnTo`.
+- **A refresh in flight during a sign-out** in another tab may write new cookies for the ended session. Their
+  lightweight access token lasts at most 5 min, the next refresh fails, and the `signed-out` message has
+  already sent that tab to sign-in. Accepted.
+
+Messages carry only a type and `sub`, never a token. `BroadcastChannel` and Web Locks are standard and in every
+current browser (Chrome 69, Edge 79, Firefox 96, Safari 15.4 and later); Web Locks needs a secure context, which
+`https://shop.test` and `http://localhost` are. Without them the design stays correct, only slower to react:
+without Web Locks each tab refreshes on its own; without `BroadcastChannel` other tabs notice a sign-out when
+they become visible or make their next call.
 
 ### `/api/<unit>/me`
 Answered by the unit's backend from `idp.getUser(sub)` and `idp.getUnitRoles(sub, unit)`. Field names follow
@@ -394,7 +433,7 @@ stated. Criterion 14 is checked by hand in New Relic.
 6. `/api/<unit>/me` returns the OIDC fields and only that unit's roles, with `no-store` and `Vary: Cookie`,
    and never a token or `sid`.
 7. When the lightweight access token expires, the next call gets `401`, the client refreshes once and retries
-   successfully; concurrent `401`s share one refresh.
+   successfully; concurrent `401`s in several tabs lead to one refresh.
 8. Sign-out shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, every
    FES refuses within 30 s and every backend within 5 min.
 9. With the IdP stopped, FES and backend checks answer `503` problem+json and never allow a request.
@@ -409,6 +448,10 @@ stated. Criterion 14 is checked by hand in New Relic.
     Keycloak-specific claim.
 14. Browser events and server transactions carry `enduser.id` equal to `sub`, and no email or username.
 15. No axe violations at WCAG 2.2 AA on the no-access fallback and the Shell's user display, in both themes.
+16. With two tabs open, signing out in one sends the other to sign-in at once; signing in in one takes the other
+    from the sign-in page to its `returnTo`; sign-ins started in both tabs both succeed.
+17. With two tabs open, signing in as another user in one makes the other reload and show that user before it
+    sends any request as them.
 
 MVP-1's criterion 6 now reads: the browser talks only to the public origin, the IdP's origin during sign-in
 and sign-out redirects, and the New Relic browser agent's own endpoints.
@@ -427,6 +470,7 @@ These depend on the IdP's exact behaviour and are checked on a running Keycloak 
   grants, and grants that need another repository's service account must apply after it exists.
 - Docker networking: the issuer stays `https://shop.test:8443/…` while servers reach `keycloak:8080`.
 - Real cookie sizes, each expected well under 4 KB.
+- What Keycloak does when a second tab submits its sign-in form after the first tab has signed in.
 - `shop_at` received by pages and APIs after `/auth/callback` and `/auth/refresh`.
 
 ## Phases
@@ -436,9 +480,10 @@ and the next starts only when asked.
 
 1. Keycloak, its database, the importer, realm basics and every repository's `keycloak/` file, in the compose
    overlay.
-2. The Shell FES's sign-in lifecycle and the three cookies, `/api/shell/me`, the user in the Shell, New Relic.
-3. The IdP adapter, FES and backend checks in every unit, `/api/<unit>/me`, the clients' refresh wrapper, the
-   standalone bypass.
+2. The Shell FES's sign-in lifecycle and the three cookies, `/api/shell/me`, the user in the Shell, keeping
+   tabs in step, New Relic.
+3. The IdP adapter, FES and backend checks in every unit, `/api/<unit>/me`, the clients' refresh wrapper with
+   its Web Lock, the standalone bypass.
 4. Backend-to-backend access with API roles; the operator token on the router.
 5. End-to-end tests for MVP-2, with MVP-1's still passing with every switch off.
 
