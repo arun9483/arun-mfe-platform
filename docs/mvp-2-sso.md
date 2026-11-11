@@ -198,7 +198,8 @@ happens only when a call is refused, so hidden tabs do nothing.
 ### Several tabs
 Every tab of one browser profile shares the cookies, so all tabs always hold the same tokens. The Shell keeps
 the tabs in step with a [`BroadcastChannel`](https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts)
-named `shop-auth`, and remembers the `sub` it shows.
+named `shop-auth`. The Shell client keeps the `sub` it shows in page memory, set from `/api/shell/me`; it is
+not written to storage or a cookie, a reload clears it, and no server stores it, so servers stay stateless.
 
 | Event in one tab | Message | Every other tab's Shell |
 |---|---|---|
@@ -207,7 +208,7 @@ named `shop-auth`, and remembers the `sub` it shows.
 | Refresh | None: the Web Lock above coordinates it | — |
 
 - **Another user in another tab.** Tab A shows alice; in tab B the user signs out and signs in as bob. Tab A's
-  next request would run as bob while its screen still shows alice. So a Shell that learns of another `sub`,
+  next request would run as bob while its screen still shows alice. So a Shell client that learns of another `sub`,
   from a `signed-in` message or from `/api/shell/me`, reloads the page. MFEs live in the Shell's page, so the
   reload covers them; they need no code for it.
 - **When a tab becomes visible** (`visibilitychange`), the Shell calls `/api/shell/me`. This catches what no
