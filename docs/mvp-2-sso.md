@@ -52,12 +52,12 @@ nginx (HTTPS, cache)
 shop-router   routing; checks the operator token on /health/units*, /version/units*
   ├─► Shell FES    /auth/login · /auth/callback · /auth/refresh · /auth/logout   (client shell-fes)
   │                + the checks every FES makes
-  ├─► Catalog FES  check shop_at · /userinfo gate · forward
-  └─► Cart FES     check shop_at · /userinfo gate · forward
+  ├─► Catalog FES  check shop_at · gate: its backend's /me · forward
+  └─► Cart FES     check shop_at · gate: its backend's /me · forward
          │ Authorization: Bearer <lightweight access token>
          ▼
   Shell, Catalog and Cart backends
-         check the lightweight access token → sub
+         check the lightweight access token → sub, sid; session live, enabled, unit roles
          │ Authorization: Bearer <service access token>
          ├─► IdP, through the IdP adapter: user and this unit's roles by sub
          └─► another unit's backend: + sub; the provider checks the caller and its API role
@@ -91,12 +91,13 @@ file, so each file is the full list of who may use that unit.
 
 ## Identity provider settings
 
-Realm `shop` on Keycloak 26 (exact version pinned in phase 1).
+Realm `shop` on Keycloak 26.8.2, with Postgres 18.6, applied by `keycloak-config-cli` 6.5.1. The files themselves
+are in each repository's `keycloak/` folder; the appendix lists them.
 
 | Client | Owner | Type | Settings |
 |---|---|---|---|
-| `shell-fes` | `shop-shell` | Confidential; authorization code with PKCE | Redirect `https://shop.test/auth/callback` (and `http://localhost:3000/auth/callback` for local e2e); "Always use lightweight access token" on |
-| `shell-backend`, `catalog-backend`, `cart-backend` | Each unit | Confidential; service account only, never signs a user in | Service account holds `realm-management` → `view-users`. Defines the unit's user roles (`catalog-viewer`, …) and API roles (`catalog-api:read-products`, …) |
+| `shell-fes` | `shop-shell` | Confidential; authorization code with PKCE | Redirect `https://shop.test/auth/callback` (and `http://localhost:3000/auth/callback` for local e2e); "Always use lightweight access token" on; mappers putting `sub` and the units' audiences into lightweight tokens |
+| `shell-backend`, `catalog-backend`, `cart-backend` | Each unit | Confidential; service account only, never signs a user in | Service account holds `realm-management` → `view-users`. Optional scope `kc-admin-api`, asked for only for admin API calls. Defines the unit's user roles (`catalog-viewer`, …) and API roles (`catalog-api:read-products`, …), granted through the unit's groups |
 | `shop-router` | `shop-router` | Bearer-only: no secret, never signs in | Defines the `ops` role |
 | `shop-ops` | `shop-mfe-platform` | Confidential; service account only | Granted `shop-router` → `ops` |
 
@@ -104,7 +105,20 @@ FESes have no client of their own: only the Shell FES signs users in, with `shel
 
 **Audience without editing other repositories.** Keycloak's *audience resolve* mapper adds a client to `aud`
 when the user holds one of that client's roles, so a user with a Catalog role gets `aud: catalog-backend`
-without `shell-fes` naming Catalog. Its "Add to lightweight access token" switch is on.
+without `shell-fes` naming Catalog. `shell-fes` carries its own copy with "Add to lightweight access token"
+on, and a `sub` mapper with the same switch: Keycloak leaves `sub` out of lightweight tokens otherwise.
+
+**Roles are granted through groups.** Each unit defines its own groups (`/catalog/viewer`, `/catalog/editor`,
+`/catalog/api-read-products`, …), each holding that unit's roles, and its file puts users and other units'
+service accounts in them. A user's client roles listed in one settings file would replace those from every
+other file; group memberships from every file are kept (`IMPORT_USERS_MERGEGROUPS`).
+
+**Admin API scope.** Keycloak 26.8's admin API accepts only tokens carrying the `kc-admin-api` scope and
+audience. It is optional on each backend's client, so a backend asks for it only for admin API calls, and a
+token it sends to another backend never carries admin API rights.
+
+**Applying.** Two passes: realm basics and each repository's `keycloak/shop-*.yaml`, then each repository's
+`keycloak/grants.yaml`, which grants roles to other repositories' service accounts once those exist.
 
 | Setting | Value | Why |
 |---|---|---|
@@ -160,14 +174,19 @@ without `shell-fes` naming Catalog. Its "Add to lightweight access token" switch
 ### API call
 For example `GET /api/catalog/products`:
 1. **FES.** Checks `shop_at` with `jose`: signature, `iss`, `exp`, `azp = shell-fes`, and that it is an access
-   token (`idp.isAccessToken`). Then the `/userinfo` gate, cached per `sid` for about 30 s: the session is
-   live and the user holds one of this unit's roles (`idp.rolesFromClaims`). Then `newrelic.setUserID(sub)`.
+   token (`idp.isAccessToken`). Then the **gate**: it asks its own backend's `/me` with the token, cached per
+   `sid` for about 30 s. `200` with at least one of this unit's roles lets the request through; `401` (session
+   ended, user disabled) and `403` (no role in this unit) are passed back. Then `newrelic.setUserID(sub)`.
 2. The FES calls its backend with `Authorization: Bearer <lightweight access token>`.
 3. **Backend.** Checks the token with `jose`: signature, `iss`, `exp`, its own name in `aud`, and the token
-   type. Takes `sub`, calls `newrelic.setUserID(sub)`, then `idp.getUser(sub)` and
-   `idp.getUnitRoles(sub, 'catalog')` with its own service access token, cached per `sub` for 30–60 s. A
-   disabled user or a missing role is refused. The request is handled with `sub` as the user key.
+   type. Takes `sub` and `sid`, calls `newrelic.setUserID(sub)`, then through the IdP adapter, with its own
+   service access token: `idp.isSessionActive(sub, sid)`, `idp.getUser(sub)` and `idp.getUnitRoles(sub,
+   'catalog')`, cached per `sid` for about 30 s. An ended session or a disabled user is `401`; a missing role
+   is `403`. The request is handled with `sub` as the user key.
 4. The backend never sends the lightweight access token anywhere.
+
+Keycloak refuses lightweight access tokens at `/userinfo`, so the FES asks its backend, which already holds
+everything the decision needs. The FES needs no client of its own and makes no IdP call.
 
 ### Refresh
 1. A FES finds `shop_at` expired and answers `401` problem+json.
@@ -191,9 +210,8 @@ happens only when a call is refused, so hidden tabs do nothing.
    end-session endpoint with `id_token_hint` and `post_logout_redirect_uri`, so no confirmation page is shown.
    Without `shop_id` it sends `client_id` instead, and the IdP asks the user to confirm.
 3. The IdP ends its session.
-4. Elsewhere: refresh fails at once; a FES's `/userinfo` gate fails within its cache time (about 30 s); a
-   backend's local check passes until the lightweight access token expires (at most 5 min). This is the
-   accepted price of checks that need no call per request.
+4. Elsewhere: refresh fails at once, and every backend, so every FES gate, refuses within its cache time
+   (about 30 s): the token's `sid` is no longer a live session.
 
 ### Several tabs
 Every tab of one browser profile shares the cookies, so all tabs always hold the same tokens. The Shell keeps
@@ -227,7 +245,8 @@ without Web Locks each tab refreshes on its own; without `BroadcastChannel` othe
 they become visible or make their next call.
 
 ### `/api/<unit>/me`
-Answered by the unit's backend from `idp.getUser(sub)` and `idp.getUnitRoles(sub, unit)`. Field names follow
+Answered by the unit's backend from the checks in "API call": `idp.isSessionActive(sub, sid)`,
+`idp.getUser(sub)` and `idp.getUnitRoles(sub, unit)`. It is also the FES's gate. Field names follow
 [OpenID Connect Core §5.1](https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims), plus
 `roles`, which holds **only this unit's roles**:
 
@@ -280,8 +299,8 @@ MFEs (the vision's event service) carry only IDs.
 |---|---|---|---|
 | Browser | Nothing enforced | What to show, from `/me` | — |
 | Router | Only `/health/units*`, `/version/units*`: `aud`, `ops` role | Operator access | `401`, `403` |
-| FES | `shop_at`: signature, `iss`, `exp`, `azp`, token type; `/userinfo` gate | Signed in? Allowed into this unit? | `401`, `403` |
-| Backend | Lightweight access token: signature, `iss`, `exp`, `aud`, token type; then `enabled` and roles by `sub`. Service access token: `aud`, API role | Everything about the data: ownership, actions | `401`, `403` |
+| FES | `shop_at`: signature, `iss`, `exp`, `azp`, token type; gate: its backend's `/me` | Signed in? Allowed into this unit? | `401`, `403` |
+| Backend | Lightweight access token: signature, `iss`, `exp`, `aud`, token type; then live session by `sid`, `enabled` and roles by `sub`. Service access token: `aud`, API role | Everything about the data: ownership, actions | `401`, `403` |
 
 **Fail closed.** If the IdP cannot be reached, a check answers `503`, never "allow". Every refusal is
 `application/problem+json` with `traceId` and `Cache-Control: no-store`.
@@ -310,8 +329,8 @@ export interface IdpAdapter {
   getUser(sub: string): Promise<IdpUser | undefined>;
   /** Backend: the user's effective roles in one unit, by sub. */
   getUnitRoles(sub: string, unit: string): Promise<string[]>;
-  /** FES: this unit's roles from /userinfo claims; each IdP shapes role claims its own way. */
-  rolesFromClaims(claims: Record<string, unknown>, unit: string): string[];
+  /** Backend: whether the sign-in session named by the token's sid is still live. */
+  isSessionActive(sub: string, sid: string): Promise<boolean>;
   /** FES and backend: true only for an access token, never an ID or refresh token. */
   isAccessToken(header: Record<string, unknown>, claims: Record<string, unknown>): boolean;
 }
@@ -323,12 +342,16 @@ export interface IdpAdapter {
 | Token checks | JWT and JWKS: `iss`, `exp`, `aud`, `azp` | — |
 | Service access tokens | OAuth 2.0 client credentials | — |
 | Token type | RFC 9068 header `typ: at+jwt`, where the IdP uses it | Claim `typ` is `Bearer` (`ID` for an ID token, `Refresh` for a refresh token) |
-| Roles from `/userinfo` | — | `resource_access.<unit>-backend.roles` |
+| Admin API token | — | Client credentials with `scope=kc-admin-api` |
 | User by `sub` | — | `GET /admin/realms/shop/users/<sub>` |
-| Roles by `sub` | — | `GET /admin/realms/shop/users/<sub>/role-mappings/clients/<client-uuid>/composite` |
+| Roles by `sub` | — | `GET /admin/realms/shop/users/<sub>/groups?briefRepresentation=false`: each group's roles by client ID. `view-users` cannot look up a client's internal ID, which the role-mapping endpoints need |
+| Live session | — | `GET /admin/realms/shop/users/<sub>/sessions` contains the token's `sid` |
 
 - Nothing outside the adapter calls an IdP-specific endpoint or reads an IdP-specific claim.
-- The adapter caches per `sub` and fails closed.
+- The adapter caches per `sid` and fails closed.
+- Servers fetch the IdP's metadata inside Docker (`http://keycloak:8080/realms/shop/.well-known/openid-configuration`)
+  and check that its `issuer` is `OIDC_ISSUER_URL`. `openid-client`'s own `discovery()` refuses a URL that differs
+  from the issuer, so they build its `Configuration` from that checked metadata.
 - Every adapter passes the same contract tests; the Keycloak adapter also runs against a real Keycloak.
 - Another IdP needs a new adapter and its own settings files, with no change to flows, cookies or checks. It
   must allow refresh tokens to be used more than once (or rotate with a reuse window), support RP-initiated
@@ -340,7 +363,7 @@ All open source.
 
 | Package | Used by | For |
 |---|---|---|
-| [`openid-client`](https://www.npmjs.com/package/openid-client) | Shell FES (sign-in, refresh, sign-out); every FES (`/userinfo`); every backend (client credentials) | OIDC and OAuth flows. OpenID-certified |
+| [`openid-client`](https://www.npmjs.com/package/openid-client) | Shell FES (sign-in, refresh, sign-out); every backend (client credentials) | OIDC and OAuth flows. OpenID-certified |
 | [`jose`](https://www.npmjs.com/package/jose) | Every FES and backend, the router | Checking tokens against the IdP's cached public keys; encrypting `shop_rt` and `shop_id` |
 | [`keycloak-config-cli`](https://github.com/adorsys/keycloak-config-cli) | `shop-mfe-platform` (a container) | Applying every repository's IdP settings |
 
@@ -366,7 +389,7 @@ version. MVP-2 adds:
 Standalone MFEs keep the Shell stub as in MVP-1, with a **development-only bypass** instead of the IdP:
 
 1. The MFE's FES and backend run with `AUTH_DEV_BYPASS=true`; no IdP, no sign-in, no cookies.
-2. The FES skips the cookie and `/userinfo`, acting as the user from `AUTH_DEV_USER_SUB` and
+2. The FES skips the cookie and its gate, acting as the user from `AUTH_DEV_USER_SUB` and
    `AUTH_DEV_USER_ROLES`, and calls its backend without a token.
 3. The backend skips its token check and the IdP; `/api/<unit>/me` returns that user with this unit's
    configured roles. Everything after the check runs as usual, with `sub` as the user key.
@@ -401,6 +424,8 @@ Every switch is off by default.
 | `IDP_ADAPTER` | every FES and backend | `keycloak` |
 | `AUTH_DEV_BYPASS`, `AUTH_DEV_USER_SUB`, `AUTH_DEV_USER_ROLES` | an MFE's FES and backend, standalone only | unset |
 | `KC_HOSTNAME`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` | Keycloak | `https://shop.test:8443`, `true` |
+| `KC_HOSTNAME_ADMIN`, `KEYCLOAK_DEBUG_PORT` | Keycloak | `http://localhost:8081`, `8081`: the admin console, for debugging |
+| `KEYCLOAK_ADMIN_USER`, `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `TEST_USER_PASSWORD`, `SHOP_OPS_SECRET` | `shop-mfe-platform`'s `docker/.env` | per developer |
 
 Keycloak, its database and the importer run from a separate `docker/compose.sso.yaml` overlay in
 `shop-mfe-platform`; the base stack does not change.
@@ -410,7 +435,8 @@ Keycloak, its database and the importer run from a separate `docker/compose.sso.
 | Port | Server | Purpose |
 |---|---|---|
 | `8443` | nginx | The IdP's public origin, `https://shop.test:8443`, with the existing `shop.test` certificate |
-| `8080` | Keycloak | Internal only: nginx and the units' servers reach it as `keycloak:8080` |
+| `8080` | Keycloak | Inside Docker: nginx and the units' servers reach it as `keycloak:8080` |
+| `8081` | Keycloak | `127.0.0.1` only: the admin console, for debugging. `/admin` is refused on `8443` |
 | `5432` | Postgres | Internal only: Keycloak's database |
 
 `KC_HOSTNAME` keeps the issuer `https://shop.test:8443/realms/shop` for the browser and for token checks,
@@ -435,8 +461,8 @@ stated. Criterion 14 is checked by hand in New Relic.
    and never a token or `sid`.
 7. When the lightweight access token expires, the next call gets `401`, the client refreshes once and retries
    successfully; concurrent `401`s in several tabs lead to one refresh.
-8. Sign-out shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, every
-   FES refuses within 30 s and every backend within 5 min.
+8. Sign-out shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, and
+   every backend and FES refuses within 30 s.
 9. With the IdP stopped, FES and backend checks answer `503` problem+json and never allow a request.
 10. A backend calling another without the needed API role gets `403`; with the role, the call succeeds and
     carries the user's `sub`.
@@ -457,30 +483,36 @@ stated. Criterion 14 is checked by hand in New Relic.
 MVP-1's criterion 6 now reads: the browser talks only to the public origin, the IdP's origin during sign-in
 and sign-out redirects, and the New Relic browser agent's own endpoints.
 
-## To confirm in phase 1
+## Confirmed in phase 1
 
-These depend on the IdP's exact behaviour and are checked on a running Keycloak before any unit code:
+Checked on Docker Desktop on 2026-11-11 by `shop-mfe-platform`'s `docker/sso-check.sh`, which signs in through
+Keycloak's own page with Playwright as `shell-fes`. Every check passes; MVP-1's e2e suite still passes with
+Keycloak running.
 
-- The claims in Keycloak's lightweight access token: `sub` through the `basic` scope, `aud` through audience
-  resolve with its lightweight switch, and whether `scope` remains.
-- Sign-out with an **expired** `id_token_hint`: the ID token lives 5 min, sign-out may come hours later. If
-  Keycloak refuses it, sign-out refreshes first, or signs out server-side with the refresh token inside the
-  adapter.
-- The admin API's response fields for the pinned version.
-- `keycloak-config-cli` with several files for one realm: no file may remove another's clients, roles or
-  grants, and grants that need another repository's service account must apply after it exists.
-- Docker networking: the issuer stays `https://shop.test:8443/…` while servers reach `keycloak:8080`.
-- Real cookie sizes, each expected well under 4 KB.
-- What Keycloak does when a second tab submits its sign-in form after the first tab has signed in.
-- `shop_at` received by pages and APIs after `/auth/callback` and `/auth/refresh`.
+| Item | Result |
+|---|---|
+| Issuer and networking | Discovery inside Docker reports `https://shop.test:8443/realms/shop`; back-channel endpoints point to `keycloak:8080` |
+| Lightweight access token | `exp`, `iat`, `jti`, `iss`, `aud`, `sub`, `typ`, `azp`, `sid`, `scope`; no profile or roles. **`sub` needed a mapper.** `aud` holds the backends of units the user has roles in, plus `account` |
+| Token type | Claim `typ`: `Bearer`, `ID`, `Refresh`. The JWT header says `JWT`, not `at+jwt` |
+| `/userinfo` | **Refuses lightweight access tokens.** The FES gate asks its backend's `/me` instead (decided 2026-11-11) |
+| Admin API | **Needs the `kc-admin-api` scope** (Keycloak 26.8). With `view-users`: user by `sub`, roles through groups, sessions by `sub` |
+| Settings in several files | **A user's client roles in one file replaced every other file's.** Roles are granted through groups; re-running every file, and one file alone, changes nothing |
+| Refresh token used twice | Both succeed |
+| Two tabs | Sign-ins started in both tabs both complete, each with its own `state` |
+| Sign-out, expired `id_token_hint` (5+ min old) | Accepted: no confirmation page; refresh then fails, and the `sid` is gone from the user's sessions |
+| Sign-out with only `client_id` | Keycloak shows its confirmation page |
+| Cookie sizes | `shop_at` 907 B, `shop_rt` 1,087 B, `shop_id` 1,597 B |
+| Admin console | Refused through nginx; on `127.0.0.1:8081` only |
+
+Still to confirm, in phase 2: `shop_at` received by pages and APIs after `/auth/callback` and `/auth/refresh`.
 
 ## Phases
 
 **Provisional.** Re-planned after this document is approved; review may change them. One pull request each,
 and the next starts only when asked.
 
-1. Keycloak, its database, the importer, realm basics and every repository's `keycloak/` file, in the compose
-   overlay.
+1. Done: Keycloak, its database, the importer, realm basics and every repository's `keycloak/` file, in the compose
+   overlay, with `docker/sso-check.sh`.
 2. The Shell FES's sign-in lifecycle and the three cookies, `/api/shell/me`, the user in the Shell, keeping
    tabs in step, New Relic.
 3. The IdP adapter, FES and backend checks in every unit, `/api/<unit>/me`, the clients' refresh wrapper with
@@ -490,189 +522,13 @@ and the next starts only when asked.
 
 ## Appendix: IdP settings per repository
 
-`keycloak-config-cli` YAML, Keycloak's own realm format. Secrets are never committed: `$(env:…)` is filled at
-import (`import.var-substitution.enabled=true`) from each repository's gitignored `.env`. Attribute and mapper
-names are confirmed in phase 1.
+Each repository owns its settings, in `keycloak-config-cli` YAML (Keycloak's own realm format). Secrets are
+never committed: `$(env:…)` is filled at import from gitignored `.env` files.
 
-### `shop-mfe-platform/keycloak/realm.yaml` (applied first)
-
-```yaml
-realm: shop
-enabled: true
-sslRequired: external
-accessTokenLifespan: 300
-ssoSessionIdleTimeout: 1800
-ssoSessionMaxLifespan: 36000
-revokeRefreshToken: false
-
-clientScopes:
-  - name: roles                        # built-in; audience resolve must reach lightweight tokens
-    protocol: openid-connect
-    protocolMappers:
-      - name: audience resolve
-        protocol: openid-connect
-        protocolMapper: oidc-audience-resolve-mapper
-        config:
-          access.token.claim: "true"
-          lightweight.claim: "true"
-
-users:                                 # test users; each unit's file grants its own roles
-  - username: alice
-    enabled: true
-    email: alice@example.com
-    emailVerified: true
-    firstName: Alice
-    lastName: Test
-    credentials:
-      - type: password
-        value: $(env:TEST_USER_PASSWORD)
-  - username: bob                      # no Catalog role: tests 403
-    enabled: true
-    email: bob@example.com
-    emailVerified: true
-    firstName: Bob
-    lastName: Test
-    credentials:
-      - type: password
-        value: $(env:TEST_USER_PASSWORD)
-
-clients:
-  - clientId: shop-ops                 # the operator's caller for /health/units*
-    protocol: openid-connect
-    publicClient: false
-    secret: $(env:SHOP_OPS_SECRET)
-    standardFlowEnabled: false
-    directAccessGrantsEnabled: false
-    serviceAccountsEnabled: true
-```
-
-### `shop-shell/keycloak/shop-shell.yaml`
-
-```yaml
-realm: shop
-
-clients:
-  - clientId: shell-fes                # the one sign-in client
-    protocol: openid-connect
-    publicClient: false
-    secret: $(env:SHELL_FES_SECRET)
-    standardFlowEnabled: true
-    implicitFlowEnabled: false
-    directAccessGrantsEnabled: false
-    serviceAccountsEnabled: false
-    redirectUris: ["https://shop.test/auth/callback", "http://localhost:3000/auth/callback"]
-    webOrigins: ["https://shop.test", "http://localhost:3000"]
-    attributes:
-      pkce.code.challenge.method: S256
-      client.use.lightweight.access.token.enabled: "true"
-      post.logout.redirect.uris: "https://shop.test/##http://localhost:3000/"
-
-  - clientId: shell-backend
-    protocol: openid-connect
-    publicClient: false
-    secret: $(env:SHELL_BACKEND_SECRET)
-    standardFlowEnabled: false
-    directAccessGrantsEnabled: false
-    serviceAccountsEnabled: true
-
-roles:
-  client:
-    shell-backend:
-      - name: shell-user
-
-users:
-  - username: service-account-shell-backend
-    clientRoles:
-      realm-management: [view-users]
-  - username: alice
-    clientRoles:
-      shell-backend: [shell-user]
-  - username: bob
-    clientRoles:
-      shell-backend: [shell-user]
-```
-
-### `shop-catalog/keycloak/shop-catalog.yaml`
-
-```yaml
-realm: shop
-
-clients:
-  - clientId: catalog-backend
-    protocol: openid-connect
-    publicClient: false
-    secret: $(env:CATALOG_BACKEND_SECRET)
-    standardFlowEnabled: false
-    directAccessGrantsEnabled: false
-    serviceAccountsEnabled: true
-
-roles:
-  client:
-    catalog-backend:
-      - name: catalog-viewer           # user roles
-      - name: catalog-editor
-      - name: catalog-api:read-products  # API role for other backends
-
-users:
-  - username: service-account-catalog-backend
-    clientRoles:
-      realm-management: [view-users]
-  - username: service-account-cart-backend   # Catalog grants Cart read access
-    clientRoles:
-      catalog-backend: [catalog-api:read-products]
-  - username: alice
-    clientRoles:
-      catalog-backend: [catalog-viewer, catalog-editor]
-```
-
-### `shop-cart/keycloak/shop-cart.yaml`
-
-```yaml
-realm: shop
-
-clients:
-  - clientId: cart-backend
-    protocol: openid-connect
-    publicClient: false
-    secret: $(env:CART_BACKEND_SECRET)
-    standardFlowEnabled: false
-    directAccessGrantsEnabled: false
-    serviceAccountsEnabled: true
-
-roles:
-  client:
-    cart-backend:
-      - name: cart-user
-
-users:
-  - username: service-account-cart-backend
-    clientRoles:
-      realm-management: [view-users]
-  - username: alice
-    clientRoles:
-      cart-backend: [cart-user]
-  - username: bob
-    clientRoles:
-      cart-backend: [cart-user]
-```
-
-### `shop-router/keycloak/shop-router.yaml`
-
-```yaml
-realm: shop
-
-clients:
-  - clientId: shop-router              # audience and holder of the ops role; never signs in
-    protocol: openid-connect
-    bearerOnly: true
-
-roles:
-  client:
-    shop-router:
-      - name: ops
-
-users:
-  - username: service-account-shop-ops
-    clientRoles:
-      shop-router: [ops]
-```
+| File | Holds |
+|---|---|
+| [`shop-mfe-platform/keycloak/realm.yaml`](https://github.com/arun9483/shop-mfe-platform/blob/main/keycloak/realm.yaml) | Realm, lifetimes, test users `alice` and `bob`, `shop-ops` |
+| [`shop-shell/keycloak/shop-shell.yaml`](https://github.com/arun9483/shop-shell/blob/main/keycloak/shop-shell.yaml) | `shell-fes` with its `sub` and audience mappers, `shell-backend`, `/shell/user` |
+| [`shop-catalog/keycloak/shop-catalog.yaml`](https://github.com/arun9483/shop-catalog/blob/main/keycloak/shop-catalog.yaml), [`grants.yaml`](https://github.com/arun9483/shop-catalog/blob/main/keycloak/grants.yaml) | `catalog-backend`, Catalog's roles and groups; Cart's backend in `/catalog/api-read-products` |
+| [`shop-cart/keycloak/shop-cart.yaml`](https://github.com/arun9483/shop-cart/blob/main/keycloak/shop-cart.yaml) | `cart-backend`, `/cart/user` |
+| [`shop-router/keycloak/shop-router.yaml`](https://github.com/arun9483/shop-router/blob/main/keycloak/shop-router.yaml), [`grants.yaml`](https://github.com/arun9483/shop-router/blob/main/keycloak/grants.yaml) | `shop-router`, the `ops` role and group; `shop-ops` in `/shop-router/ops` |

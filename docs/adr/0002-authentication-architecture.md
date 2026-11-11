@@ -76,11 +76,23 @@ backend.
 C keeps tokens out of page code, keeps the token on the wire small and free of personal data, and lets every
 backend learn the user from the IdP with its own identity.
 
+## Amended after phase 1 (2026-11-11)
+
+Phase 1 found that Keycloak refuses lightweight access tokens at `/userinfo`. The FES gate is therefore:
+
+- **FES.** After its local check, asks **its own backend's `/me`** with the token, cached per `sid` for about
+  30 s. `200` with one of the unit's roles lets the request through; `401` and `403` are passed back. The FES
+  still has no client of its own and makes no IdP call.
+- **Backend.** Besides `enabled` and roles, checks that the token's session is live (`sid` among the user's
+  sessions, through the IdP adapter), cached per `sid` for about 30 s.
+
+Sign-out now reaches every FES and backend within about 30 s, not 5 min. Option C stands otherwise.
+
 ## Consequences
 
 - Every FES and backend depends on the IdP for each uncached check. Checks fail closed, so an IdP outage
   stops the shop. Caches (about 30 s in a FES, 30–60 s in a backend) limit the load.
-- After sign-out, a backend still accepts the user's token until it expires, at most 5 min.
+- After sign-out, FESes and backends refuse the user's token within about 30 s (see the amendment).
 - Every backend's service account can read all users (`view-users`).
 - The three cookies are an exception to MVP-1's "no server sets a cookie" rule.
 - MVP-1's criterion 6 gains the IdP's origin, during sign-in and sign-out only.
