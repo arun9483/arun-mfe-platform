@@ -168,20 +168,22 @@ token it sends to another backend never carries admin API rights.
 ### Page and MFE load
 1. The Shell's HTML, every `/mfe/<name>/entry.js` and every `/api/*` need a valid `shop_at`. Hashed files
    hold no data and stay public and edge-cacheable.
-2. The Shell client calls `/api/shell/me`, shows the user, and calls `newrelic.setUserId(sub)`.
+2. With sign-in on, the Shell FES marks the page (`<meta name="shop-sign-in" content="on">`). Only then does the
+   Shell client call `/api/shell/me`, show the user and call `newrelic.setUserId(sub)`; with sign-in off it makes
+   no extra request, as in MVP-1.
 3. On `/catalog`, `import('/mfe/catalog/entry.js')` carries `shop_at`; Catalog's FES checks it.
 
 ### API call
 For example `GET /api/catalog/products`:
 1. **FES.** Checks `shop_at` with `jose`: signature, `iss`, `exp`, `azp = shell-fes`, and that it is an access
    token (`idp.isAccessToken`). Then the **gate**: it asks its own backend's `/me` with the token, cached per
-   `sid` for about 30 s. `200` with at least one of this unit's roles lets the request through; `401` (session
+   `sid` for 15 s. `200` with at least one of this unit's roles lets the request through; `401` (session
    ended, user disabled) and `403` (no role in this unit) are passed back. Then `newrelic.setUserID(sub)`.
 2. The FES calls its backend with `Authorization: Bearer <lightweight access token>`.
 3. **Backend.** Checks the token with `jose`: signature, `iss`, `exp`, its own name in `aud`, and the token
    type. Takes `sub` and `sid`, calls `newrelic.setUserID(sub)`, then through the IdP adapter, with its own
    service access token: `idp.isSessionActive(sub, sid)`, `idp.getUser(sub)` and `idp.getUnitRoles(sub,
-   'catalog')`, cached per `sid` for about 30 s. An ended session or a disabled user is `401`; a missing role
+   'catalog')`, cached per `sid` for 15 s. An ended session or a disabled user is `401`; a missing role
    is `403`. The request is handled with `sub` as the user key.
 4. The backend never sends the lightweight access token anywhere.
 
@@ -207,11 +209,14 @@ happens only when a call is refused, so hidden tabs do nothing.
 1. The Shell client calls `newrelic.setUserId(null)`, then submits a `POST` form to `/auth/logout`, so the
    browser follows the redirects that come back.
 2. The Shell FES reads the ID token from `shop_id`, clears the three cookies and redirects to the IdP's
-   end-session endpoint with `id_token_hint` and `post_logout_redirect_uri`, so no confirmation page is shown.
-   Without `shop_id` it sends `client_id` instead, and the IdP asks the user to confirm.
-3. The IdP ends its session.
-4. Elsewhere: refresh fails at once, and every backend, so every FES gate, refuses within its cache time
-   (about 30 s): the token's `sid` is no longer a live session.
+   end-session endpoint with `id_token_hint` and `post_logout_redirect_uri=<origin>/auth/signed-out`, so no
+   confirmation page is shown. Without `shop_id` it sends `client_id` instead, and the IdP asks the user to
+   confirm.
+3. The IdP ends its session and sends the browser to `/auth/signed-out`, a small page from the Shell FES that
+   tells the other tabs (`signed-out`) and goes on to the shop, which asks to sign in. Telling them earlier, at
+   submit, let a tab sign in again on the session still being ended (found in phase 2).
+4. Elsewhere: refresh fails at once, and every backend and FES gate refuses within 30 s: the token's `sid` is no
+   longer a live session, and the FES and the backend each reuse an answer for 15 s.
 
 ### Several tabs
 Every tab of one browser profile shares the cookies, so all tabs always hold the same tokens. The Shell keeps
@@ -221,8 +226,8 @@ not written to storage or a cookie, a reload clears it, and no server stores it,
 
 | Event in one tab | Message | Every other tab's Shell |
 |---|---|---|
-| Sign-out | `{ type: 'signed-out' }` | Navigates to `/auth/login?returnTo=<its path>` at once, so no tab keeps showing the user's data |
-| Sign-in | `{ type: 'signed-in', sub }` | On the sign-in page: reloads to its `returnTo`. Showing another `sub`: reloads (see below) |
+| Sign-out | `{ type: 'signed-out' }`, sent by `/auth/signed-out` once the IdP's session has ended | Navigates to `/auth/login?returnTo=<its path>` at once, so no tab keeps showing the user's data |
+| Sign-in | `{ type: 'signed-in', sub }`, sent whenever the Shell shows a user | Showing another `sub`: reloads (see below). A tab on the IdP's sign-in page is on another origin and gets no message; its own sign-in completes when submitted |
 | Refresh | None: the Web Lock above coordinates it | — |
 
 - **Another user in another tab.** Tab A shows alice; in tab B the user signs out and signs in as bob. Tab A's
@@ -419,7 +424,9 @@ Every switch is off by default.
 | `AUTH_ENABLED` | every FES and backend | `false`: MVP-1 behaviour |
 | `HEALTH_UNITS_AUTH` | router | `false` |
 | `OIDC_ISSUER_URL` | every FES and backend, the router | `https://shop.test:8443/realms/shop` |
-| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | Shell FES (`shell-fes`), each backend (its own client), the operator caller (`shop-ops`) | per developer, in `.env` |
+| `OIDC_INTERNAL_URL` | every FES and backend, the router | `http://keycloak:8080/realms/shop`: where the server reaches the IdP inside Docker |
+| `PUBLIC_ORIGIN` | Shell FES | `https://shop.test`: the callback, sign-out and `Origin` checks |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | Shell FES (`shell-fes`), each backend (its own client), the operator caller (`shop-ops`) | in each server's own `.env`: its copy of the secret in its repository's `keycloak/.env`, which must match (decided 2026-11-11) |
 | `AUTH_COOKIE_KEY` | Shell FES | per developer; encrypts `shop_rt` and `shop_id` |
 | `IDP_ADAPTER` | every FES and backend | `keycloak` |
 | `AUTH_DEV_BYPASS`, `AUTH_DEV_USER_SUB`, `AUTH_DEV_USER_ROLES` | an MFE's FES and backend, standalone only | unset |
@@ -441,6 +448,14 @@ Keycloak, its database and the importer run from a separate `docker/compose.sso.
 
 `KC_HOSTNAME` keeps the issuer `https://shop.test:8443/realms/shop` for the browser and for token checks,
 while servers reach Keycloak on the internal network.
+
+**Header size.** Signing in sets three cookies at once, about 4 KB of response headers. nginx's default buffer
+refused that ("upstream sent too big header"), so `shop.conf` raises it to 16 KB. Any CDN or proxy in front of
+the shop needs the same headroom.
+
+**Staging, later.** On Cloud Run an FES sends its Google identity token in `Authorization` to reach its private
+backend. With sign-in on, that header carries the lightweight access token, so the Google token moves to
+`X-Serverless-Authorization`, which Cloud Run also accepts.
 
 ## Success criteria
 
@@ -475,8 +490,8 @@ stated. Criterion 14 is checked by hand in New Relic.
     Keycloak-specific claim.
 14. Browser events and server transactions carry `enduser.id` equal to `sub`, and no email or username.
 15. No axe violations at WCAG 2.2 AA on the no-access fallback and the Shell's user display, in both themes.
-16. With two tabs open, signing out in one sends the other to sign-in at once; signing in in one takes the other
-    from the sign-in page to its `returnTo`; sign-ins started in both tabs both succeed.
+16. With two tabs open, signing out in one sends the other to sign-in at once, and sign-ins started in both tabs
+    both succeed.
 17. With two tabs open, signing in as another user in one makes the other reload and show that user before it
     sends any request as them.
 
@@ -504,21 +519,22 @@ Keycloak running.
 | Cookie sizes | `shop_at` 907 B, `shop_rt` 1,087 B, `shop_id` 1,597 B |
 | Admin console | Refused through nginx; on `127.0.0.1:8081` only |
 
-Still to confirm, in phase 2: `shop_at` received by pages and APIs after `/auth/callback` and `/auth/refresh`.
+Confirmed in phase 2: `shop_at` reaches pages and APIs after `/auth/callback` and `/auth/refresh`.
 
 ## Phases
 
-**Provisional.** Re-planned after this document is approved; review may change them. One pull request each,
-and the next starts only when asked.
+Each phase is re-planned before it starts. The next starts only when asked.
 
-1. Done: Keycloak, its database, the importer, realm basics and every repository's `keycloak/` file, in the compose
-   overlay, with `docker/sso-check.sh`.
-2. The Shell FES's sign-in lifecycle and the three cookies, `/api/shell/me`, the user in the Shell, keeping
-   tabs in step, New Relic.
-3. The IdP adapter, FES and backend checks in every unit, `/api/<unit>/me`, the clients' refresh wrapper with
-   its Web Lock, the standalone bypass.
+1. **Done:** Keycloak, its database, the importer, realm basics and every repository's `keycloak/` file, in the
+   compose overlay, with `docker/sso-check.sh`.
+2. **Done:** the Shell unit, end to end (re-planned 2026-11-11, because `/api/shell/me` needs the backend checks):
+   the sign-in lifecycle and the three cookies, the FES gate, `server-common`'s auth with the Keycloak adapter, the
+   backend checks and `/me`, and the Shell client (user, sign-out, refresh wrapper, tabs, New Relic). Criteria 2, 3,
+   6, 7, 8, 15, 16 and 17 pass for the Shell (`shop-shell`'s `sso.spec.ts`); MVP-1's suite passes with sign-in off.
+3. Catalog and Cart: `server-common`'s auth copied, the FES gate (including `entry.js`), backend checks, `/me`,
+   the clients' refresh wrapper, the no-access fallback, the standalone bypass.
 4. Backend-to-backend access with API roles; the operator token on the router.
-5. End-to-end tests for MVP-2, with MVP-1's still passing with every switch off.
+5. The remaining end-to-end criteria across units.
 
 ## Appendix: IdP settings per repository
 

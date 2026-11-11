@@ -84,6 +84,13 @@ to work differently.
 - No FES needs the Shell's secret or its library version; each checks `shop_at` with `jose`.
 - Units hold no session, so any pod serves any request.
 
+## Amended after phase 2 (2026-11-11)
+
+- The IdP returns the browser to `/auth/signed-out`, which tells the other tabs once its session has ended.
+  Telling them when the form is submitted let another tab sign in again on the session being ended.
+- Setting the three cookies takes about 4 KB of response headers: proxies in front of the shop need a buffer
+  larger than nginx's default (16 KB on Docker).
+
 ## Revisit when
 
 - A maintained library supports separate cookies per token: replace the Shell FES's own routes with it.
