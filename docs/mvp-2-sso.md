@@ -204,8 +204,10 @@ everything the decision needs. The FES needs no client of its own and makes no I
 3. Only if the retry still gets `401` does it call `POST /auth/refresh`. The Shell FES refreshes with
    `shell-fes`'s credentials (`scope=openid`, so a new ID token comes too) and sets the three cookies. The
    client releases the lock and retries its call.
-4. If refresh fails, because the IdP's session has ended, the three cookies are cleared and the client goes
-   to `/auth/login?returnTo=<path>`.
+4. If refresh fails, because the IdP's session has ended (`401`), the three cookies are cleared and the client
+   goes to `/auth/login?returnTo=<path>`. If login cannot be checked right now (`503`, e.g. the IdP is down), the
+   client stays on the page and shows that the data could not be loaded: login would only reach an IdP that is
+   down (decided in phase 5).
 
 Each client carries this small `401` → lock → retry → refresh → retry wrapper itself. It shares only a URL
 and a lock name with the Shell, never code, as the vision requires. No tab refreshes on a timer: refresh
@@ -324,7 +326,13 @@ MFEs (the vision's event service) carry only IDs.
 | Backend | Lightweight access token: signature, `iss`, `exp`, `aud`, token type; then live session by `sid`, `enabled` and roles by `sub`. Service access token: `aud`, API role | Everything about the data: ownership, actions | `401`, `403` |
 
 **Fail closed.** If the IdP cannot be reached, a check answers `503`, never "allow". Every refusal is
-`application/problem+json` with `traceId` and `Cache-Control: no-store`.
+`application/problem+json` with `traceId` and `Cache-Control: no-store`, except a page, which gets a short HTML
+`503` ("Login cannot be checked right now. Try again shortly."). Two limits, by design:
+
+- Answers the FES gate and the backend cached just before an outage stay valid for up to 15 s each, the same
+  window as logout.
+- Service routes and the router's operator token are checked offline with the IdP's cached keys: a service
+  access token has no session to look up, so they keep working until the token expires.
 
 ## IdP adapter
 
@@ -506,7 +514,9 @@ stated. Criterion 14 is checked by hand in New Relic.
    successfully; concurrent `401`s in several tabs lead to one refresh.
 8. Logout shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, and
    every backend and FES refuses within 30 s.
-9. With the IdP stopped, FES and backend checks answer `503` problem+json and never allow a request.
+9. With the IdP stopped, once answers cached before the outage have expired (15 s), FES and backend checks
+   answer `503` and never allow a request; pages show the HTML `503`; an expired login stays in the shop. With
+   the IdP back, the shop works again without restarting any server.
 10. A backend calling another without the needed API role is refused (`401` when its token does not name the
     provider, which Keycloak leaves out without a role there; `403` when it does but lacks the role); with the
     role, the call succeeds and carries the user's `sub`.
@@ -569,7 +579,29 @@ Each phase is re-planned before it starts. The next starts only when asked.
 4. **Done:** backend-to-backend access with API roles (Cart reads products from Catalog) and the operator token
    on the router; private backends again with the overlay on (one Keycloak network per unit). Criteria 10 and 11
    pass (`sso-check.sh` checks 16–18, `sso.spec.ts`); MVP-1's suite passes with login off.
-5. The remaining end-to-end criteria across units.
+5. **Done:** the IdP down (9), the adapter contract and its lint rule (13), New Relic (14), and criterion 7 across
+   tabs. MVP-2 is complete. The tag `mvp-2` follows the user's own end-to-end manual verification.
+
+## Results
+
+MVP-2 is complete (2026-11-12). Every criterion, how it is verified, and its result on Docker Desktop:
+
+| # | Verified by | Result |
+|---|---|---|
+| 1 | MVP-1's e2e suite with login off: locally, and on Docker without the overlay | 92 passed locally; 65 passed, 5 skipped on Docker |
+| 2, 3, 6, 7, 8 | `shop-shell`'s `sso.spec.ts` (Shell, Catalog, Cart; 7 also in two tabs) | Pass |
+| 4, 15 | `sso.spec.ts`: `bob` and the "no access" message, axe in both themes | Pass |
+| 5 | `sso-check.sh` check 15 (each backend called directly) and check 11 (expired token) | Pass |
+| 9 | `idp-down.spec.ts` (stops and starts Keycloak) | Pass |
+| 10 | `sso-check.sh` check 17; `sso.spec.ts` (both users' carts from Catalog) | Pass |
+| 11 | `sso-check.sh` check 18 | Pass |
+| 12 | `standalone.spec.ts` (bypass, refuses production and Cloud Run) | Pass |
+| 13 | Contract (`server-common/src/auth/idp/contract.ts`): unit tests against a fake IdP and an unreachable Keycloak; `sso-check.sh` check 19 against Keycloak. ESLint refuses Keycloak's endpoints and claim names outside `idp/keycloak.ts` in every repository | Pass |
+| 14 | New Relic, queried through NerdGraph, confirmed in the UI | `enduser.id` on transactions of every FES and backend and on browser page views, interactions and AJAX calls; every value a `sub` (UUID); none with `@` |
+| 16, 17 | `sso.spec.ts`, several tabs | Pass |
+
+Also checked by `sso-check.sh`: Keycloak's settings re-applied without loss (8), the admin console only on
+`127.0.0.1` (14), and network isolation (16).
 
 ## Appendix: IdP settings per repository
 

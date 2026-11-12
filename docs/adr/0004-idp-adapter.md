@@ -65,6 +65,14 @@ export interface IdpAdapter {
 - `shop-router` carries a copy of the units' `server-common/src/auth/`, so the operator token is checked by the
   same code and the same adapter.
 
+## Amended after phase 5 (2026-11-12)
+
+- The contract is code: `server-common/src/auth/idp/contract.ts`, framework-free. Unit tests run it against a
+  fake IdP and an unreachable Keycloak; `shop-mfe-platform`'s `sso-check.sh` against the real Keycloak.
+- "Nothing outside the adapter reads an IdP-specific claim" is an ESLint rule in every repository:
+  `no-restricted-syntax` refuses `resource_access`, `realm_access`, `/admin/realms/` and `kc-admin-api`
+  anywhere but `idp/keycloak.ts` (tests may build tokens with them).
+
 ## Consequences
 
 - Moving to another IdP means a new adapter and that IdP's settings files, with no change to the units'
