@@ -167,7 +167,10 @@ token it sends to another backend never carries admin API rights.
 
 ### Page and MFE load
 1. The Shell's HTML, every `/mfe/<name>/entry.js` and every `/api/*` need a valid `shop_at`. Hashed files
-   hold no data and stay public and edge-cacheable.
+   hold no data and stay public and edge-cacheable. Pages have no file extension: a missing file (e.g.
+   `/favicon.ico`) is a plain `404`, never the app and never through the gate, where an expired login would
+   start a login round-trip in the background for an image request (verification finding F3). The Shell has
+   its own favicon.
 2. With login on, the Shell FES marks the page (`<meta name="shop-login" content="on">`). Only then does the
    Shell client call `/api/shell/me`, show the user and call `newrelic.setUserId(sub)`; with login off it makes
    no extra request, as in MVP-1.
@@ -235,7 +238,7 @@ not written to storage or a cookie, a reload clears it, and no server stores it,
 | Event in one tab | Message | Every other tab's Shell |
 |---|---|---|
 | Logout | `{ type: 'logged-out' }`, sent by `/auth/logged-out` once the IdP's session has ended | Navigates to `/auth/login?returnTo=<its path>` at once, so no tab keeps showing the user's data |
-| Login | `{ type: 'logged-in', sub }`, sent whenever the Shell shows a user | Showing another `sub`: reloads (see below). A tab on the IdP's login page is on another origin and gets no message; its own login completes when submitted |
+| Login | `{ type: 'logged-in', sub }`, sent whenever the Shell shows a user | Showing another `sub`: reloads (see below). A tab on the IdP's login page is on another origin and gets no message; Keycloak continues it by itself (see below) |
 | Refresh | None: the Web Lock above coordinates it | — |
 
 - **Another user in another tab.** Tab A shows alice; in tab B the user logs out and logs in as bob. Tab A's
@@ -247,6 +250,10 @@ not written to storage or a cookie, a reload clears it, and no server stores it,
   browser. A `401` leads to the usual refresh, and a failed refresh to login.
 - **Logins started in two tabs** each keep their own attempt cookie (see Login), and a callback that finds
   the user already logged in goes to its `returnTo`.
+- **A tab left on Keycloak's login page** continues by itself once the browser has logged in in another tab:
+  Keycloak 24 and later watch for it (`authChecker.js`) and send that tab through
+  `login-actions/restart` → `authenticate` → its own `/auth/callback`, with no second form. Each tab still
+  completes its own attempt with its own `state` (found in the manual verification, F5).
 - **A refresh in flight during a logout** in another tab may write new cookies for the ended session. Their
   lightweight access token lasts at most 5 min, the next refresh fails, and the `logged-out` message has
   already sent that tab to login. Accepted.
@@ -327,7 +334,8 @@ MFEs (the vision's event service) carry only IDs.
 
 **Fail closed.** If the IdP cannot be reached, a check answers `503`, never "allow". Every refusal is
 `application/problem+json` with `traceId` and `Cache-Control: no-store`, except a page, which gets a short HTML
-`503` ("Login cannot be checked right now. Try again shortly."). Two limits, by design:
+`503` ("Login cannot be checked right now. Try again shortly.") with a **Try again** link to the same address
+(F6; it does not reload by itself). Two limits, by design:
 
 - Answers the FES gate and the backend cached just before an outage stay valid for up to 15 s each, the same
   window as logout.
@@ -413,6 +421,8 @@ version. MVP-2 adds:
 - **`/api/<unit>/me`**: as above, `200` with `Cache-Control: no-store` and `Vary: Cookie`.
 - **`/auth/refresh` and `/auth/logout`** accept only `POST`, check that `Origin` is the shop's own origin, and
   rely on `SameSite=Lax` against cross-site requests, so another site cannot refresh or end a user's session.
+  Opened in a browser (`GET`), they answer `405` with `Allow: POST` and a short page (for logout: "use the Log
+  out button"); any other `/auth` address is a `404`, never the app (F1).
 - **`/auth/login`** and **`/auth/callback`** accept a `returnTo` that is a path on the shop's own origin, never a
   full URL.
 
