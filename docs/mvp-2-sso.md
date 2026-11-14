@@ -650,7 +650,8 @@ Each phase is re-planned before it starts. The next starts only when asked.
 
 ## Results
 
-MVP-2 is complete (2026-11-12). Every criterion, how it is verified, and its result on Docker Desktop:
+MVP-2 is complete (2026-11-12; manually verified by 2026-11-14, see Manual verification). Every criterion, how
+it is verified, and its result on Docker Desktop:
 
 | # | Verified by | Result |
 |---|---|---|
@@ -668,6 +669,27 @@ MVP-2 is complete (2026-11-12). Every criterion, how it is verified, and its res
 
 Also checked by `sso-check.sh`: Keycloak's settings re-applied without loss (8), the admin console only on
 `127.0.0.1` (14), and network isolation (16).
+
+## Manual verification
+
+After the phases, the user verified MVP-2 end to end by hand on Docker Desktop (2026-11-12 to 2026-11-14):
+login, logout and several tabs; Catalog and Cart; the operator token; New Relic; login off (MVP-1); and the
+IdP down. Every part passed. The findings, and what was decided for each:
+
+| # | Finding | Decision |
+|---|---|---|
+| F1 | `GET /auth/logout` and unknown `/auth/*` addresses showed the Shell's "Page not found" | Fixed (shop-shell#19): `405` with `Allow: POST`, or `404` |
+| F2 | Every unit's `/me` returns `email` and `email_verified`, while this design asks only for what the UI needs | Not fixed (user, 2026-11-14) |
+| F3 | Missing files (e.g. `/favicon.ico`) went through the page gate: with an expired login, a hidden login round-trip | Fixed (shop-shell#19): files with an extension are a plain `404`, outside the gate; the Shell has a favicon |
+| F4 | Cookies are per host, not port: on `shop.test:8443` the IdP received the shop's cookies and stored its own under `shop.test` | Fixed (shop-mfe-platform#10 and the units): the IdP on its own host, `idp.test` (see Ports) |
+| F5 | Keycloak 24+ continues a pending login in other tabs by itself | Documented (see Several tabs) |
+| F6 | The page `503` did not recover by itself | Fixed (shop-shell#19): a **Try again** link, no automatic reload |
+| F7 | A call refused for an expired login gets two `401`s before the refresh (the retry inside the lock) | Not fixed (user, 2026-11-14): by design |
+| F8 | `up -d --wait` could fail with `keycloak-grants exited (0)`: a one-shot importer nothing waited for | Fixed (shop-mfe-platform#9): nginx waits for it to complete |
+| F9 | With the IdP down, a page load with an expired login reached the IdP's address: a bare `502` from nginx | Fixed (shop-shell#20 and the units): `/auth/resume` and the IdP check in `/auth/login` (see Page load with an expired login) |
+
+Every check above passed again after the fixes: MVP-1's suite (92 locally; 65 passed, 5 skipped on Docker),
+`sso.spec.ts` (26), `idp-down.spec.ts` and `sso-check.sh` (17 passed, 0 failed).
 
 ## Appendix: IdP settings per repository
 
