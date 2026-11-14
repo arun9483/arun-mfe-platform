@@ -45,7 +45,7 @@ logged in on two devices has two.
 ```
 Browser (Shell + MFE clients; no token readable by page code)
   │ cookies: shop_at (Path=/) · shop_rt (Path=/auth) · shop_id (Path=/auth/logout)
-  ├──── login / logout redirects ─────────────────► IdP: Keycloak, https://shop.test:8443, realm `shop`
+  ├──── login / logout redirects ─────────────────► IdP: Keycloak, https://idp.test, realm `shop`
   ▼                                                      users, roles, the login session, its admin API
 nginx (HTTPS, cache)
   ▼
@@ -249,6 +249,27 @@ happens only when a call is refused, so hidden tabs do nothing.
    submit, let a tab log in again on the session still being ended (found in phase 2).
 4. Elsewhere: refresh fails at once, and every backend and FES gate refuses within 30 s: the token's `sid` is no
    longer a live session, and the FES and the backend each reuse an answer for 15 s.
+
+**Two shop routes, the IdP in between.** `/auth/logout` starts the logout and `/auth/logged-out` finishes it:
+
+```
+Log out ─► POST shop.test/auth/logout ─303─► GET idp.test/…/logout?id_token_hint=…&post_logout_redirect_uri=…
+                                                   │ the IdP ends its session
+           GET shop.test/auth/logged-out ◄─302─────┘ ─► tells the other tabs ─► / ─► asks to log in
+```
+
+| | `POST /auth/logout` | `GET /auth/logged-out` |
+|---|---|---|
+| Called by | The Shell's **Log out** button | The IdP, as its `post_logout_redirect_uri` |
+| Does | Reads `shop_id`, clears the three cookies, redirects to the IdP's end-session endpoint | Tells the other tabs (`BroadcastChannel` `shop-auth`), then goes to `/` |
+| Receives | All three cookies (`shop_id` only ever reaches this path) | No IdP cookies; the shop's are already cleared |
+| Protection | `POST` only, `Origin` checked: another site cannot log a user out | Changes nothing, so a `GET` |
+
+Both are needed. The shop cannot end the IdP's session itself: the IdP's cookies are on the IdP's own host
+(F4), so the browser must visit the IdP's logout; clearing only the shop's cookies would let the next login
+pass straight through the IdP's live session without a password. And the other tabs are told only once the
+browser is back at `/auth/logged-out`, when the IdP's session has certainly ended; told earlier, a tab could
+log in again on that session (found in phase 2).
 
 ### Several tabs
 Every tab of one browser profile shares the cookies, so all tabs always hold the same tokens. The Shell keeps
@@ -488,7 +509,7 @@ Every switch is off by default.
 | `AUTH_ENABLED` | every FES and backend | `false`: MVP-1 behaviour |
 | `HEALTH_UNITS_AUTH` | router | `false`; with it, the router also needs `OIDC_ISSUER_URL` and `OIDC_INTERNAL_URL` |
 | `CATALOG_BACKEND_URL` | Cart's backend | unset: Cart keeps its own names and prices (MVP-1) |
-| `OIDC_ISSUER_URL` | every FES and backend, the router | `https://shop.test:8443/realms/shop` |
+| `OIDC_ISSUER_URL` | every FES and backend, the router | `https://idp.test/realms/shop` |
 | `OIDC_INTERNAL_URL` | every FES and backend, the router | `http://keycloak:8080/realms/shop`: where the server reaches the IdP inside Docker |
 | `PUBLIC_ORIGIN` | Shell FES | `https://shop.test`: the callback, logout and `Origin` checks |
 | `LOGIN_CLIENT_ID` | an MFE's FES | `shell-fes`: the only login client whose tokens it accepts (`azp`). It has no client of its own |
@@ -496,7 +517,7 @@ Every switch is off by default.
 | `AUTH_COOKIE_KEY` | Shell FES | per developer; encrypts `shop_rt` and `shop_id` |
 | `IDP_ADAPTER` | every FES and backend | `keycloak` |
 | `AUTH_DEV_BYPASS`, `AUTH_DEV_USER_SUB`, `AUTH_DEV_USER_ROLES` | an MFE's FES and backend, standalone only | unset |
-| `KC_HOSTNAME`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` | Keycloak | `https://shop.test:8443`, `true` |
+| `KC_HOSTNAME`, `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` | Keycloak | `https://idp.test`, `true` |
 | `KC_HOSTNAME_ADMIN`, `KEYCLOAK_DEBUG_PORT` | Keycloak | `http://localhost:8081`, `8081`: the admin console, for debugging |
 | `KEYCLOAK_ADMIN_USER`, `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `TEST_USER_PASSWORD`, `SHOP_OPS_SECRET` | `shop-mfe-platform`'s `docker/.env` | per developer |
 
@@ -507,13 +528,20 @@ Keycloak, its database and the importer run from a separate `docker/compose.sso.
 
 | Port | Server | Purpose |
 |---|---|---|
-| `8443` | nginx | The IdP's public origin, `https://shop.test:8443`, with the existing `shop.test` certificate |
+| `443` | nginx | The shop, `https://shop.test`, and the IdP on its own host, `https://idp.test` (`IDP_HOST`), chosen by host name; one certificate covers both |
 | `8080` | Keycloak | Inside Docker: nginx and the units' servers reach it as `keycloak:8080` |
-| `8081` | Keycloak | `127.0.0.1` only: the admin console, for debugging. `/admin` is refused on `8443` |
+| `8081` | Keycloak | `127.0.0.1` only: the admin console, for debugging. `/admin` is refused on `idp.test` |
 | `5432` | Postgres | Internal only: Keycloak's database |
 
-`KC_HOSTNAME` keeps the issuer `https://shop.test:8443/realms/shop` for the browser and for token checks,
+`KC_HOSTNAME` keeps the issuer `https://idp.test/realms/shop` for the browser and for token checks,
 while servers reach Keycloak on the internal network.
+
+**Its own host (verification finding F4).** Browser cookies belong to a host, not a port. With the IdP on
+`https://idp.test`, the browser sent the shop's cookies (`shop_at` included) to Keycloak, and Keycloak's
+own cookies were stored under `shop.test`. On its own host, `idp.test`
+(`IDP_HOST`), neither receives the other's cookies. It is a separate site, not a subdomain of the shop, as a
+real IdP would be, and `*.shop.test` stays free for tenants (e.g. `orgA.shop.test`): nginx sends every host
+other than the IdP's to the shop.
 
 **Networks.** Each unit reaches Keycloak on its own Docker network (`idp-edge`, `idp-router`, `idp-shell`,
 `idp-catalog`, `idp-cart`; the importer and the check script on `idp-admin`), with Keycloak alone on all of them.
@@ -584,7 +612,7 @@ Keycloak running.
 
 | Item | Result |
 |---|---|
-| Issuer and networking | Discovery inside Docker reports `https://shop.test:8443/realms/shop`; back-channel endpoints point to `keycloak:8080` |
+| Issuer and networking | Discovery inside Docker reports `https://idp.test/realms/shop`; back-channel endpoints point to `keycloak:8080` |
 | Lightweight access token | `exp`, `iat`, `jti`, `iss`, `aud`, `sub`, `typ`, `azp`, `sid`, `scope`; no profile or roles. **`sub` needed a mapper.** `aud` holds the backends of units the user has roles in, plus `account` |
 | Token type | Claim `typ`: `Bearer`, `ID`, `Refresh`. The JWT header says `JWT`, not `at+jwt` |
 | `/userinfo` | **Refuses lightweight access tokens.** The FES gate asks its backend's `/me` instead (decided 2026-11-11) |
