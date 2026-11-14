@@ -646,7 +646,8 @@ Each phase is re-planned before it starts. The next starts only when asked.
    on the router; private backends again with the overlay on (one Keycloak network per unit). Criteria 10 and 11
    pass (`sso-check.sh` checks 16–18, `sso.spec.ts`); MVP-1's suite passes with login off.
 5. **Done:** the IdP down (9), the adapter contract and its lint rule (13), New Relic (14), and criterion 7 across
-   tabs. MVP-2 is complete. The tag `mvp-2` follows the user's own end-to-end manual verification.
+   tabs. MVP-2 is complete. After the user's own end-to-end manual verification, the six
+   repositories were tagged `mvp-2` (2026-11-14).
 
 ## Results
 
