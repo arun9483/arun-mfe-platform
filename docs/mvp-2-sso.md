@@ -50,7 +50,7 @@ Browser (Shell + MFE clients; no token readable by page code)
 nginx (HTTPS, cache)
   ▼
 shop-router   routing; checks the operator token on /health/units*, /version/units*
-  ├─► Shell FES    /auth/login · /auth/callback · /auth/refresh · /auth/logout   (client shell-fes)
+  ├─► Shell FES    /auth/login · /auth/callback · /auth/resume · /auth/refresh · /auth/logout   (client shell-fes)
   │                + the checks every FES makes
   ├─► Catalog FES  check shop_at · gate: its backend's /me · forward
   └─► Cart FES     check shop_at · gate: its backend's /me · forward
@@ -151,9 +151,13 @@ token it sends to another backend never carries admin API rights.
 ## Flows
 
 ### Login
-1. A protected request without a valid `shop_at`: a page is redirected to `/auth/login?returnTo=<path>`; an
-   API call or `entry.js` gets `401` problem+json.
-2. The Shell FES redirects to the IdP's authorization endpoint (code with PKCE, `state`, `nonce`), keeping
+1. A protected request without a valid `shop_at`: a page is redirected to `/auth/resume?returnTo=<path>`
+   (see "Page load with an expired login"), which goes on to `/auth/login?returnTo=<path>` when there is no
+   login to refresh; an API call or `entry.js` gets `401` problem+json.
+2. `/auth/login` first checks that the IdP answers (its metadata, inside the network, 2 s timeout, answer
+   reused for 5 s). If it does not, the browser gets the shop's HTML `503` with **Try again** linking to
+   `returnTo`, never the IdP's address, where nginx could only show a bare `502` (verification finding F9).
+   Otherwise the Shell FES redirects to the IdP's authorization endpoint (code with PKCE, `state`, `nonce`), keeping
    `state`, `nonce`, the PKCE verifier and `returnTo` in a short-lived encrypted cookie named for this attempt,
    `shop_tx_<state>`, on `Path=/auth/callback`. Each attempt has its own, so logins started in several tabs
    do not overwrite each other.
@@ -211,6 +215,23 @@ everything the decision needs. The FES needs no client of its own and makes no I
    goes to `/auth/login?returnTo=<path>`. If login cannot be checked right now (`503`, e.g. the IdP is down), the
    client stays on the page and shows that the data could not be loaded: login would only reach an IdP that is
    down (decided in phase 5).
+
+### Page load with an expired login
+A page load (a full navigation, not a call from the client) cannot use the client's refresh: `shop_rt` is on
+`Path=/auth`, so the page's request does not carry it. So the gate sends the page to
+`/auth/resume?returnTo=<path>`, which does (verification finding F9):
+
+| `/auth/resume` finds | Then |
+|---|---|
+| `shop_rt`, refresh succeeds | Sets the three cookies and redirects to `returnTo`. The browser never visits the IdP. |
+| No `shop_rt`, or the IdP's session has ended | Clears the cookies (if any) and redirects to `/auth/login?returnTo=<path>`. |
+| `Sec-Fetch-Site` other than `same-origin` or `none`, or missing | No refresh: redirects to `/auth/login?returnTo=<path>`, as before F9. |
+| The IdP cannot answer | The shop's HTML `503`, **Try again** linking to `returnTo`. |
+
+**Try again** always links to the shop page asked for (`returnTo`), never an `/auth` address, so the gate
+decides afresh: a login refreshed in another tab loads the page at once. Without a `returnTo`, or with one
+that is not a shop path, it links to `/`. `/auth/resume` does not take part in the client's Web Locks lock;
+two tabs loading pages at once refresh twice, which Keycloak allows (`revokeRefreshToken: false`).
 
 Each client carries this small `401` → lock → retry → refresh → retry wrapper itself. It shares only a URL
 and a lock name with the Shell, never code, as the vision requires. No tab refreshes on a timer: refresh
@@ -334,8 +355,9 @@ MFEs (the vision's event service) carry only IDs.
 
 **Fail closed.** If the IdP cannot be reached, a check answers `503`, never "allow". Every refusal is
 `application/problem+json` with `traceId` and `Cache-Control: no-store`, except a page, which gets a short HTML
-`503` ("Login cannot be checked right now. Try again shortly.") with a **Try again** link to the same address
-(F6; it does not reload by itself). Two limits, by design:
+`503` ("Login cannot be checked right now. Try again shortly.") with a **Try again** link to the page asked for
+(F6; it does not reload by itself). That holds for an expired login too, from `/auth/resume` and
+`/auth/login` (F9). Two limits, by design:
 
 - Answers the FES gate and the backend cached just before an outage stay valid for up to 15 s each, the same
   window as logout.
@@ -423,8 +445,13 @@ version. MVP-2 adds:
   rely on `SameSite=Lax` against cross-site requests, so another site cannot refresh or end a user's session.
   Opened in a browser (`GET`), they answer `405` with `Allow: POST` and a short page (for logout: "use the Log
   out button"); any other `/auth` address is a `404`, never the app (F1).
-- **`/auth/login`** and **`/auth/callback`** accept a `returnTo` that is a path on the shop's own origin, never a
-  full URL.
+- **`/auth/resume`** is a `GET`, as pages are sent to it. It refreshes only when the browser's `Sec-Fetch-Site`
+  is `same-origin` or `none` (the user's own navigation), which covers every step of a redirect chain. A
+  navigation from another site, including a link to any shop page that then redirects here, or a request
+  without the header, goes on to `/auth/login` instead, so another site cannot make it refresh (for example to
+  keep a session from timing out). It never ends a session or logs in another user.
+- **`/auth/login`**, **`/auth/resume`** and **`/auth/callback`** accept a `returnTo` that is a path on the shop's
+  own origin, never a full URL.
 
 ## Standalone mode
 
@@ -525,8 +552,9 @@ stated. Criterion 14 is checked by hand in New Relic.
 8. Logout shows no confirmation page, clears all three cookies, and ends access: refresh fails at once, and
    every backend and FES refuses within 30 s.
 9. With the IdP stopped, once answers cached before the outage have expired (15 s), FES and backend checks
-   answer `503` and never allow a request; pages show the HTML `503`; an expired login stays in the shop. With
-   the IdP back, the shop works again without restarting any server.
+   answer `503` and never allow a request; pages show the HTML `503`; an expired login stays in the shop,
+   on a page load too, with or without a refresh token (F9). With the IdP back, the shop works again
+   without restarting any server.
 10. A backend calling another without the needed API role is refused (`401` when its token does not name the
     provider, which Keycloak leaves out without a role there; `403` when it does but lacks the role); with the
     role, the call succeeds and carries the user's `sub`.
