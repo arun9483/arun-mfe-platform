@@ -7,8 +7,8 @@ source, so each tenant can run as its own deployment with its own IdP and domain
 - **Additive and off by default.** With default settings every unit behaves as in MVP-2, and MVP-1's criteria
   1–14 and MVP-2's criteria 1–17 still pass.
 - **Docker Desktop only.** Staging and production come later.
-- **Planned, not built.** Scope fixed on 2026-11-15. Each phase is re-planned before it starts, and the next
-  starts only when asked.
+- **Phase 1 done** (2026-11-15, [below](#phase-1-result)); phases 2 and 3 planned. Each phase is re-planned
+  before it starts, and the next starts only when asked.
 
 ## Goals
 
@@ -42,7 +42,7 @@ the cost of keeping the copies equal.
 | Package | Contents | Third-party |
 |---|---|---|
 | `@arun-dev/server`, with subpath exports `/http`, `/auth`, `/auth/keycloak` | `/http`: trace response, problem+json, health and version, `write-version`, graceful shutdown, `forward`, `requiredEnv`, backend auth headers. `/auth`: token checks, OIDC metadata, caches, FES gate, backend checks, service tokens, cookies, dev bypass, operator token, the login lifecycle, the IdP adapter contract and its exported contract tests. `/auth/keycloak`: the Keycloak adapter | Peer dependencies `express`, `jose`, `openid-client`; `newrelic` optional. All called directly |
-| `@arun-dev/client` | `apiFetch` with the refresh lock, `fetchWithTimeout` and `withTimeout`, login and logout URLs, theme storage key and no-flash script, the runtime config reader | None: plain TypeScript and browser APIs, so any framework can use it |
+| `@arun-dev/client` | `apiFetch` with the refresh lock, `startLogout`, `fetchWithTimeout` and `withTimeout`, login and logout URLs, theme storage key and no-flash script; the runtime config reader comes in phase 2, with the injection that uses it | None: plain TypeScript and browser APIs, so any framework can use it |
 
 ### Generic, not tied to MFEs
 
@@ -217,6 +217,41 @@ audiences, `AUTH_COOKIE_KEY`, New Relic keys and app names, and test users. `/et
    Criteria 1, 7 and 10.
 3. **Two tenants.** Tenant settings files, a Compose project per tenant, the front door and the certificates;
    run `orga` and `orgb` side by side. Criteria 4–9. Then `1.0.0` and the `mvp-3` tag on every repository.
+
+## Phase 1 result
+
+Done on 2026-11-15. `@arun-dev/server` and `@arun-dev/client` are published from
+[arun-web-foundation](https://github.com/arun9483/arun-web-foundation) by its release workflow, with provenance;
+every unit uses them and holds no copy (criteria 2 and 3).
+
+| Repository | Pull request |
+|---|---|
+| arun-web-foundation | #1 workspace, #2 `@arun-dev/server`, #3 `@arun-dev/client`, #5 `startLogout`; releases 0.1.0 (server, client), 0.2.0 (client) |
+| shop-router | #12 |
+| shop-catalog | #17 |
+| shop-cart | #17 |
+| shop-shell | #22; `@arun-shop/shell-stub` 0.3.1 |
+| shop-mfe-platform | #11: `sso-check` runs the adapter contract from `@arun-dev/server` |
+
+**Checked** on Docker Desktop after each unit switched, with the images from `deploy/build.sh`: MVP-1's e2e suite
+with login off (65 passed, 5 that need a server's own port skipped), MVP-2's `sso.spec.ts`, the IdP-down test and
+`sso-check.sh` (all 20 checks, the ID-token expiry one included), so criterion 1 holds.
+
+**Changed from the plan**
+- The IdP adapter's `getUnitRoles(sub, unit)` is `getClientRoles(sub, client)`, and `requireUser` takes
+  `audience`, `rolesClient` and `requireRole` in place of `unit`.
+- `authNames({ cookiePrefix, authPaths })` gives every cookie name and login path; `appName` and the messages
+  are options. Defaults are today's values.
+- The first release of each package was a hand-published `0.0.0` placeholder, so the trusted publisher could be
+  set up; `0.1.0` onwards come from the release workflow.
+- Our own packages are excluded from pnpm's one-day `minimumReleaseAge` in every repository that uses them.
+
+**Found and fixed:** the flaky "logging out in one tab sends the other to login" test was a real bug. A call
+answered just after the logout response got `401`, and the client went to login, which cancelled the logout's
+redirects, so `/auth/logged-out` never told the other tabs. `startLogout()`, called when the logout form is sent,
+stops that; a new e2e test forces the race.
+
+**Left as is:** the `X-Shop-User-Sub` header name, and `connectIdp` choosing only Keycloak (phase 2).
 
 ## Success criteria
 
