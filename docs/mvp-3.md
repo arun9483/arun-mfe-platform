@@ -7,8 +7,8 @@ source, so each tenant can run as its own deployment with its own IdP and domain
 - **Additive and off by default.** With default settings every unit behaves as in MVP-2, and MVP-1's criteria
   1–14 and MVP-2's criteria 1–17 still pass.
 - **Docker Desktop only.** Staging and production come later.
-- **Phase 1 done** (2026-11-15, [below](#phase-1-result)); phases 2 and 3 planned. Each phase is re-planned
-  before it starts, and the next starts only when asked.
+- **Phases 1 and 2 done** ([phase 1](#phase-1-result), [phase 2](#phase-2-result)); phase 3 planned. Each
+  phase is re-planned before it starts, and the next starts only when asked.
 
 ## Goals
 
@@ -252,6 +252,52 @@ redirects, so `/auth/logged-out` never told the other tabs. `startLogout()`, cal
 stops that; a new e2e test forces the race.
 
 **Left as is:** the `X-Shop-User-Sub` header name, and `connectIdp` choosing only Keycloak (phase 2).
+
+## Phase 2 result
+
+Done on 2026-11-16. Every hard-coded tenant value is a setting whose default is today's value, and one build
+of each unit serves every tenant (criteria 1, 7 and 10).
+
+| Repository | Pull request |
+|---|---|
+| arun-web-foundation | #7: `connectIdp(settings, adapters)`, `appConfigScript`, `readAppConfig`; releases server 0.2.0, client 0.3.0 |
+| shop-mfe-platform | #12: `OIDC_REALM`, `PUBLIC_HOST`, `DEV_ORIGIN`, `certs.sh`, tenant-aware `sso-check`; #13: `check-tenant-values.sh` |
+| shop-router | #13 |
+| shop-catalog | #18 |
+| shop-cart | #18 |
+| shop-shell | #24 |
+
+**Settings**: `BACKEND_AUDIENCE` (each FES), `OIDC_AUDIENCE` (each backend), `HEALTH_UNITS_AUDIENCE` and
+`HEALTH_UNITS_ROLE` (router), `IDP_ADAPTER` (picks among the adapters a unit passes to `connectIdp`), and
+for the stack `PUBLIC_HOST`, `OIDC_REALM` and `DEV_ORIGIN`. Every repository's Keycloak files take
+`$(env:OIDC_REALM)`; the Shell's login URLs take `$(env:PUBLIC_ORIGIN)` and `$(env:DEV_ORIGIN)`.
+
+**Runtime config**: the Shell FES puts the New Relic browser values in the page from five named
+`PUBLIC_NEW_RELIC_*` variables (`fes/src/public-config.ts`); the client reads them, so no key is in the bundle.
+`VITE_NEW_RELIC_LICENSE_KEY` is now `PUBLIC_NEW_RELIC_BROWSER_KEY`.
+
+**Source maps**: each client's build keeps its maps in `client/sourcemaps/`, out of `dist` and the image;
+`deploy/upload-sourcemaps.sh` uploads them for one tenant, and `deploy/build.sh` runs it when
+`PUBLIC_ORIGIN` is set.
+
+**Checked** on Docker Desktop after each unit: MVP-1's e2e suite (65 passed, 5 skipped), MVP-2's
+`sso.spec.ts` (28 passed, with a new test that the page holds only the allowed fields and none of five
+secrets), the IdP-down test, and `sso-check.sh` (all 20 checks); by hand, the browser agent starts from the
+page's values. `check-tenant-values.sh` passes on `main` (criterion 7).
+
+**Changed from the plan**
+- Certificates were never committed: `docker/build.sh` already made them. `certs.sh` now makes one tenant's,
+  and its "already covered" check works on macOS (LibreSSL has no `-checkhost`, so every build used to
+  replace the certificate).
+- Test users stay `alice` and `bob` in every tenant: each tenant has its own Keycloak, so they are separate
+  accounts with that tenant's `TEST_USER_PASSWORD`.
+- Compose's `name: shop` stays: `docker compose -p` overrides it per tenant; `sso-check` takes the project
+  from `COMPOSE_PROJECT_NAME`.
+- Staging deploys are paused (each unit's `deploy-staging.yml` is turned off) and keep the phase 1 build.
+  Before they run again they need the source-map upload step, and the Shell's the `PUBLIC_NEW_RELIC_*`
+  runtime values.
+
+**Left as is:** the `X-Shop-User-Sub` header name.
 
 ## Success criteria
 
