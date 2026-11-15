@@ -7,6 +7,7 @@ This repository contains **only documentation and figures**. Code lives in separ
 - [Vision](docs/vision.md): requirements that are independent of technology, framework and library.
 - [MVP](docs/mvp.md): the MVP (POC) and the technology decisions behind it. Frozen at tag `mvp-1`.
 - [MVP-2: single sign-on](docs/mvp-2-sso.md): login with an identity provider, built on MVP-1.
+- [MVP-3: shared packages and isolated tenants](docs/mvp-3.md): the plan for moving shared code into npm packages and running each tenant with its own IdP and domains.
 
 ## Architecture decisions
 
