@@ -7,8 +7,8 @@ source, so each tenant can run as its own deployment with its own IdP and domain
 - **Additive and off by default.** With default settings every unit behaves as in MVP-2, and MVP-1's criteria
   1–14 and MVP-2's criteria 1–17 still pass.
 - **Docker Desktop only.** Staging and production come later.
-- **Phases 1 and 2 done** ([phase 1](#phase-1-result), [phase 2](#phase-2-result)); phase 3 planned. Each
-  phase is re-planned before it starts, and the next starts only when asked.
+- **Done** on 2026-11-17: [phase 1](#phase-1-result), [phase 2](#phase-2-result),
+  [phase 3](#phase-3-result). Every criterion below is met.
 
 ## Goals
 
@@ -217,6 +217,7 @@ audiences, `AUTH_COOKIE_KEY`, New Relic keys and app names, and test users. `/et
    Criteria 1, 7 and 10.
 3. **Two tenants.** Tenant settings files, a Compose project per tenant, the front door and the certificates;
    run `orga` and `orgb` side by side. Criteria 4–9. Then `1.0.0` and the `mvp-3` tag on every repository.
+   Done: [phase 3 result](#phase-3-result).
 
 ## Phase 1 result
 
@@ -298,6 +299,51 @@ page's values. `check-tenant-values.sh` passes on `main` (criterion 7).
   runtime values.
 
 **Left as is:** the `X-Shop-User-Sub` header name.
+
+## Phase 3 result
+
+Done on 2026-11-17. Two tenants, `orga` and `orgb`, ran side by side on Docker Desktop from the same images,
+behind a local front door (criteria 4–9).
+
+| Repository | Pull request |
+|---|---|
+| shop-mfe-platform | #14: `compose.tenant.yaml`, the front door, `tenant.sh`, tenant settings examples, `sso-check` per tenant |
+| shop-shell | #25: `tenants.spec.ts` and the backend client's default scopes; #26: packages 1.0.0 |
+| shop-catalog, shop-cart | #19: the backend client's default scopes; #20: packages 1.0.0 |
+| shop-router | #14: packages 1.0.0 |
+| arun-web-foundation | #9: `@arun-dev/server` and `@arun-dev/client` 1.0.0 |
+
+**How it runs**: `docker/tenant.sh up <id>` runs Compose project `tenant-<id>` from `tenants/<id>.env`
+(gitignored) with the `compose.tenant.yaml` overlay: nginx only on `127.0.0.1:<port>`, the tenant's own
+secrets, Keycloak and New Relic apps (`<id>-<unit>`, browser app `<id>-shell`). `tenant.sh front-door up`
+publishes ports 80 and 443 and routes each host name to its tenant's nginx (TLS passthrough, no
+certificate), its routing table written from the tenant settings files. `tenant.sh deploy <id>` uploads the
+source maps for the tenant; `tenant.sh check <id>` runs `sso-check.sh` against it.
+
+**Checked**
+- Criterion 4: all seven images identical across the two tenants; each its own Keycloak, realm, hosts,
+  certificate and New Relic apps. About 3.1 GB for both.
+- Criterion 5: `tenants.spec.ts` in both directions: a login on one is not a login on the other, every
+  cookie is host-only on its own tenant's hosts, and logging out of one leaves the other logged in.
+- Criterion 6: orgb's `sso.spec.ts` (28 tests) passes with orga's IdP stopped, and with all of orga stopped.
+- Criterion 7: `check-tenant-values.sh` passes on `main`.
+- Criterion 8: on each tenant, `sso.spec.ts` 28/28 and the full `sso-check.sh` 20/20.
+- Criterion 9 (by hand): in each tenant's browser app, the Shell's and Catalog's render and click errors
+  resolve to `src/features/TestError.tsx` from that tenant's minified URLs.
+- The default stack, after every change and on the 1.0.0 packages: full `sso-check.sh` 20/20, MVP-2 28,
+  IdP-down, MVP-1 65 (5 skipped): criterion 1.
+
+**Found and fixed**: the backend clients set only `optionalClientScopes`; created in a new realm, they got
+none of the realm's default scopes, so their service tokens had no roles and no audience. They now name
+their default scopes. The default realm was not affected, but would have been after a database reset.
+
+**Notes**
+- Docker Desktop's address pools fit about 31 networks and a stack uses 13: the default stack is taken down
+  (its data kept) while two tenants run.
+- New Relic's browser key is the account's, the same for every browser app; apps differ by application ID.
+- The browser agent sends an error from a click once the interaction ends, e.g. on the next navigation.
+- Staging deploys are still paused (phase 2): they need the source-map upload step and, for the Shell, the
+  `PUBLIC_NEW_RELIC_*` runtime values before they run again.
 
 ## Success criteria
 
